@@ -1,0 +1,35 @@
+﻿<!-- AboutWindow.xaml -->
+<Window x:Class="CSharpToUppaal.GUI.AboutWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="About C# to UPPAAL" Height="300" Width="400"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+    <Grid Margin="20">
+        <StackPanel>
+            <TextBlock Text="C# to UPPAAL Model Generator" 
+                      FontSize="18" FontWeight="Bold" 
+                      HorizontalAlignment="Center" Margin="0,0,0,20"/>
+
+            <TextBlock Text="Version 1.0.0" 
+                      FontSize="14" 
+                      HorizontalAlignment="Center" Margin="0,0,0,10"/>
+
+            <TextBlock Text="A tool for converting C# code to UPPAAL timed automata models" 
+                      TextWrapping="Wrap" 
+                      HorizontalAlignment="Center" 
+                      Margin="0,0,0,20"/>
+
+            <Separator Margin="0,0,0,20"/>
+
+            <TextBlock Text="© 2024 C# to UPPAAL Project" 
+                      HorizontalAlignment="Center" Margin="0,0,0,10"/>
+
+            <Button Content="Close" Width="80" 
+                   HorizontalAlignment="Center" 
+                   IsDefault="True" 
+                   Click="CloseButton_Click" 
+                   Margin="0,20,0,0"/>
+        </StackPanel>
+    </Grid>
+</Window>

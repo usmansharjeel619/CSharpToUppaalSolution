@@ -5,8 +5,6 @@
              xmlns:avalonEdit="http://icsharpcode.net/sharpdevelop/avalonedit">
     <Grid>
         <avalonEdit:TextEditor x:Name="editor"
-                               Text="{Binding RelativeSource={RelativeSource AncestorType=UserControl}, Path=Text, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                               IsReadOnly="{Binding RelativeSource={RelativeSource AncestorType=UserControl}, Path=IsReadOnly}"
                                FontFamily="Consolas"
                                FontSize="12"
                                ShowLineNumbers="True"
