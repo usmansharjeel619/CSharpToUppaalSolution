@@ -1,0 +1,507 @@
+﻿<Window x:Class="CSharpToUppaal.GUI.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:CSharpToUppaal.GUI"
+        xmlns:vm="clr-namespace:CSharpToUppaal.GUI.ViewModels"
+        xmlns:controls="clr-namespace:CSharpToUppaal.GUI.Controls"
+        xmlns:converters="clr-namespace:CSharpToUppaal.GUI.Converters"
+        xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+        mc:Ignorable="d"
+        Title="C# to UPPAAL Model Generator" 
+        Height="900" Width="1600"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource MaterialDesignPaper}"
+        TextElement.Foreground="{DynamicResource MaterialDesignBody}"
+        d:DataContext="{d:DesignInstance vm:MainViewModel, IsDesignTimeCreatable=True}">
+
+    <Window.Resources>
+        <converters:BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <converters:NullToVisibilityConverter x:Key="NullToVis" />
+        <converters:StatusToColorConverter x:Key="StatusToColor" />
+
+        <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignRaisedButton}">
+            <Setter Property="Margin" Value="4" />
+            <Setter Property="Padding" Value="8,4" />
+        </Style>
+
+        <Style TargetType="TextBox">
+            <Setter Property="Margin" Value="4" />
+            <Setter Property="Padding" Value="4" />
+        </Style>
+
+        <Style TargetType="ComboBox">
+            <Setter Property="Margin" Value="4" />
+            <Setter Property="Padding" Value="4" />
+        </Style>
+
+        <Style TargetType="ListBox">
+            <Setter Property="Margin" Value="4" />
+        </Style>
+
+        <Style TargetType="TreeView">
+            <Setter Property="Margin" Value="4" />
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header with Menu -->
+        <Border Grid.Row="0" Background="{DynamicResource MaterialDesignPrimaryBrush}" 
+                Padding="8">
+            <DockPanel>
+                <!-- Logo and Title -->
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                    <materialDesign:PackIcon Kind="CodeBracesBox" 
+                                            Width="32" Height="32" 
+                                            Foreground="White" Margin="8,0"/>
+                    <TextBlock Text="C# to UPPAAL Model Generator" 
+                             FontSize="20" FontWeight="Bold" 
+                             Foreground="White" VerticalAlignment="Center"/>
+                </StackPanel>
+
+                <!-- Menu -->
+                <Menu DockPanel.Dock="Right" Background="Transparent" 
+                      Foreground="White" VerticalAlignment="Center">
+
+                    <!-- File Menu -->
+                    <MenuItem Header="File">
+                        <MenuItem Header="New Project" 
+                                  Command="{Binding NewProjectCommand}"
+                                  Icon="{materialDesign:PackIcon Kind=FilePlus}"/>
+                        <MenuItem Header="Open C# File..." 
+                                  Command="{Binding OpenFileCommand}"
+                                  Icon="{materialDesign:PackIcon Kind=FileDocument}"/>
+                        <Separator />
+                        <MenuItem Header="Save UPPAAL Model..." 
+                                  Command="{Binding SaveModelCommand}"
+                                  Icon="{materialDesign:PackIcon Kind=ContentSave}"/>
+                        <Separator />
+                        <MenuItem Header="Exit" 
+                                  Command="{Binding ExitCommand}"
+                                  Icon="{materialDesign:PackIcon Kind=ExitToApp}"/>
+                    </MenuItem>
+
+                    <!-- Edit Menu -->
+                    <MenuItem Header="Edit">
+                        <MenuItem Header="Generate CFG" 
+                                  Command="{Binding GenerateCfgCommand}"
+                                  Icon="{materialDesign:PackIcon Kind=Graph}"/>
+                        <MenuItem Header="Generate UPPAAL Model" 
+                                  Command="{Binding GenerateModelCommand}"
+                                  Icon="{materialDesign:PackIcon Kind=Cogs}"/>
+                        <MenuItem Header="Verify Model" 
+                                  Command="{Binding VerifyModelCommand}"
+                                  Icon="{materialDesign:PackIcon Kind=CheckCircle}"/>
+                    </MenuItem>
+
+                    <!-- View Menu -->
+                    <MenuItem Header="View">
+                        <MenuItem Header="Show CFG Visualization" 
+                                  Command="{Binding ShowCfgCommand}"
+                                  Icon="{materialDesign:PackIcon Kind=ChartLine}"/>
+                        <MenuItem Header="Show UPPAAL Model" 
+                                  Command="{Binding ShowModelCommand}"
+                                  Icon="{materialDesign:PackIcon Kind=Xml}"/>
+                        <MenuItem Header="Show Verification Results" 
+                                  Command="{Binding ShowVerificationCommand}"
+                                  Icon="{materialDesign:PackIcon Kind=CheckAll}"/>
+                    </MenuItem>
+
+                    <!-- Tools Menu -->
+                    <MenuItem Header="Tools">
+                        <MenuItem Header="Settings" 
+                                  Command="{Binding OpenSettingsCommand}"
+                                  Icon="{materialDesign:PackIcon Kind=Cog}"/>
+                        <MenuItem Header="Clear All" 
+                                  Command="{Binding ClearAllCommand}"
+                                  Icon="{materialDesign:PackKind=Delete}"/>
+                    </MenuItem>
+
+                    <!-- Help Menu -->
+                    <MenuItem Header="Help">
+                        <MenuItem Header="Documentation" 
+                                  Command="{Binding ShowHelpCommand}"
+                                  Icon="{materialDesign:PackIcon Kind=HelpCircle}"/>
+                        <MenuItem Header="About" 
+                                  Command="{Binding ShowAboutCommand}"
+                                  Icon="{materialDesign:PackIcon Kind=Information}"/>
+                    </MenuItem>
+                </Menu>
+            </DockPanel>
+        </Border>
+
+        <!-- Main Content Area -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="300"/>
+                <ColumnDefinition Width="5"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Left Panel - Project Explorer -->
+            <Border Grid.Column="0" Background="{DynamicResource MaterialDesignCardBackground}"
+                    BorderBrush="{DynamicResource MaterialDesignDivider}"
+                    BorderThickness="0,0,1,0">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="Project Explorer" 
+                             FontSize="14" FontWeight="Bold" Margin="8"/>
+
+                    <TreeView x:Name="ProjectTree" ItemsSource="{Binding ProjectItems}">
+                        <TreeView.ItemTemplate>
+                            <HierarchicalDataTemplate ItemsSource="{Binding Children}">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="{Binding Icon}" 
+                                                           Width="16" Height="16" 
+                                                           Margin="0,0,4,0"/>
+                                    <TextBlock Text="{Binding Name}" />
+                                </StackPanel>
+                            </HierarchicalDataTemplate>
+                        </TreeView.ItemTemplate>
+                    </TreeView>
+                </DockPanel>
+            </Border>
+
+            <!-- Splitter -->
+            <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"
+                         Background="{DynamicResource MaterialDesignDivider}"/>
+
+            <!-- Right Panel - Tab Content -->
+            <TabControl Grid.Column="2" BorderThickness="0" Background="Transparent">
+                <!-- Code Editor Tab -->
+                <TabItem Header="Code Editor">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <ToolBar Grid.Row="0" Background="Transparent">
+                            <Button Content="Load File" Command="{Binding LoadFileCommand}"
+                                    ToolTip="Load C# file">
+                                <Button.ContentTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="FolderOpen" Margin="0,0,4,0"/>
+                                            <TextBlock Text="Load File"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </Button.ContentTemplate>
+                            </Button>
+                            <Separator />
+                            <Button Content="Parse" Command="{Binding ParseCodeCommand}"
+                                    ToolTip="Parse C# code">
+                                <Button.ContentTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="CodeTags" Margin="0,0,4,0"/>
+                                            <TextBlock Text="Parse"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </Button.ContentTemplate>
+                            </Button>
+                            <Button Content="Analyze" Command="{Binding AnalyzeCodeCommand}"
+                                    ToolTip="Analyze code complexity">
+                                <Button.ContentTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="ChartBar" Margin="0,0,4,0"/>
+                                            <TextBlock Text="Analyze"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </Button.ContentTemplate>
+                            </Button>
+                        </ToolBar>
+
+                        <!-- Code Editor -->
+                        <controls:CodeEditor Grid.Row="1" 
+                                           Text="{Binding SourceCode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                           FontFamily="Consolas" FontSize="12"/>
+                    </Grid>
+                </TabItem>
+
+                <!-- CFG Visualization Tab -->
+                <TabItem Header="CFG Visualization">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <ToolBar Grid.Row="0" Background="Transparent">
+                            <Button Content="Generate CFG" Command="{Binding GenerateCfgCommand}"
+                                    ToolTip="Generate Control Flow Graph">
+                                <Button.ContentTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="Graph" Margin="0,0,4,0"/>
+                                            <TextBlock Text="Generate CFG"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </Button.ContentTemplate>
+                            </Button>
+                            <Button Content="Export as DOT" Command="{Binding ExportDotCommand}"
+                                    ToolTip="Export CFG as DOT file">
+                                <Button.ContentTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="Export" Margin="0,0,4,0"/>
+                                            <TextBlock Text="Export DOT"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </Button.ContentTemplate>
+                            </Button>
+                            <Separator />
+                            <ComboBox ItemsSource="{Binding AvailableMethods}" 
+                                    SelectedItem="{Binding SelectedMethod}"
+                                    DisplayMemberPath="Name" Width="200"
+                                    ToolTip="Select method for CFG generation"/>
+                        </ToolBar>
+
+                        <!-- CFG Visualization Canvas -->
+                        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" 
+                                    VerticalScrollBarVisibility="Auto">
+                            <Canvas x:Name="CfgCanvas" Background="White">
+                                <!-- CFG nodes and edges will be drawn here -->
+                            </Canvas>
+                        </ScrollViewer>
+                    </Grid>
+                </TabItem>
+
+                <!-- UPPAAL Model Tab -->
+                <TabItem Header="UPPAAL Model">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <ToolBar Grid.Row="0" Background="Transparent">
+                            <Button Content="Generate Model" Command="{Binding GenerateModelCommand}"
+                                    ToolTip="Generate UPPAAL model from C# code">
+                                <Button.ContentTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="Cogs" Margin="0,0,4,0"/>
+                                            <TextBlock Text="Generate Model"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </Button.ContentTemplate>
+                            </Button>
+                            <Button Content="Verify" Command="{Binding VerifyModelCommand}"
+                                    ToolTip="Verify UPPAAL model">
+                                <Button.ContentTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="CheckCircle" Margin="0,0,4,0"/>
+                                            <TextBlock Text="Verify"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </Button.ContentTemplate>
+                            </Button>
+                            <Button Content="Export" Command="{Binding ExportModelCommand}"
+                                    ToolTip="Export UPPAAL model to XML">
+                                <Button.ContentTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="Download" Margin="0,0,4,0"/>
+                                            <TextBlock Text="Export"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </Button.ContentTemplate>
+                            </Button>
+                            <Separator />
+                            <TextBlock Text="Model Name:" VerticalAlignment="Center" Margin="4,0"/>
+                            <TextBox Text="{Binding ModelName, UpdateSourceTrigger=PropertyChanged}"
+                                   Width="200" ToolTip="Enter model name"/>
+                        </ToolBar>
+
+                        <!-- UPPAAL XML Editor -->
+                        <TextBox Grid.Row="1" FontFamily="Consolas" FontSize="11"
+                               Text="{Binding UppaalXml, Mode=TwoWay}"
+                               AcceptsReturn="True" AcceptsTab="True"
+                               VerticalScrollBarVisibility="Auto"
+                               HorizontalScrollBarVisibility="Auto"
+                               IsReadOnly="{Binding IsXmlReadOnly}"/>
+                    </Grid>
+                </TabItem>
+
+                <!-- Verification Results Tab -->
+                <TabItem Header="Verification Results">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <ToolBar Grid.Row="0" Background="Transparent">
+                            <Button Content="Run Verification" Command="{Binding RunVerificationCommand}"
+                                    ToolTip="Run model verification">
+                                <Button.ContentTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="Play" Margin="0,0,4,0"/>
+                                            <TextBlock Text="Run Verification"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </Button.ContentTemplate>
+                            </Button>
+                            <Button Content="Clear Results" Command="{Binding ClearVerificationCommand}"
+                                    ToolTip="Clear verification results">
+                                <Button.ContentTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="Delete" Margin="0,0,4,0"/>
+                                            <TextBlock Text="Clear"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </Button.ContentTemplate>
+                            </Button>
+                            <Separator />
+                            <TextBlock Text="Status:" VerticalAlignment="Center" Margin="4,0"/>
+                            <TextBlock Text="{Binding VerificationStatus}" 
+                                     VerticalAlignment="Center" FontWeight="Bold" Margin="4,0"/>
+                        </ToolBar>
+
+                        <!-- Verification Results Grid -->
+                        <DataGrid Grid.Row="1" ItemsSource="{Binding VerificationResults}"
+                                AutoGenerateColumns="False" IsReadOnly="True">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Property" Binding="{Binding Name}" Width="150"/>
+                                <DataGridTextColumn Header="Formula" Binding="{Binding Formula}" Width="300"/>
+                                <DataGridCheckBoxColumn Header="Verified" Binding="{Binding IsVerified}" Width="80"/>
+                                <DataGridTextColumn Header="Result" Binding="{Binding Result}" Width="200"/>
+                                <DataGridTextColumn Header="Time" Binding="{Binding VerificationTime}" Width="80">
+                                    <DataGridTextColumn.Binding>
+                                        <Binding Path="VerificationTime" StringFormat="{}{0:mm\\:ss\\.fff}"/>
+                                    </DataGridTextColumn.Binding>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="Error" Binding="{Binding ErrorMessage}" Width="*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </TabItem>
+
+                <!-- Analysis Results Tab -->
+                <TabItem Header="Analysis">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <ToolBar Grid.Row="0" Background="Transparent">
+                            <Button Content="Run Analysis" Command="{Binding RunAnalysisCommand}"
+                                    ToolTip="Analyze code complexity">
+                                <Button.ContentTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="ChartBar" Margin="0,0,4,0"/>
+                                            <TextBlock Text="Run Analysis"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </Button.ContentTemplate>
+                            </Button>
+                        </ToolBar>
+
+                        <Grid Grid.Row="1">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Methods List -->
+                            <ListBox Grid.Column="0" ItemsSource="{Binding Methods}"
+                                   SelectedItem="{Binding SelectedMethod}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="4">
+                                            <TextBlock Text="{Binding Name}" FontWeight="Bold"/>
+                                            <TextBlock Text="{Binding ReturnType}" FontStyle="Italic"/>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="Complexity: " FontWeight="SemiBold"/>
+                                                <TextBlock Text="{Binding Complexity.CyclomaticComplexity}"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <!-- Method Details -->
+                            <Border Grid.Column="1" BorderBrush="{DynamicResource MaterialDesignDivider}"
+                                  BorderThickness="1,0,0,0">
+                                <ScrollViewer>
+                                    <StackPanel Margin="8">
+                                        <TextBlock Text="Method Details" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="*"/>
+                                            </Grid.RowDefinitions>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+
+                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Name:" FontWeight="Bold" Margin="0,0,8,4"/>
+                                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedMethod.Name}" Margin="0,0,0,4"/>
+
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Return Type:" FontWeight="Bold" Margin="0,0,8,4"/>
+                                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedMethod.ReturnType}" Margin="0,0,0,4"/>
+
+                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Visibility:" FontWeight="Bold" Margin="0,0,8,4"/>
+                                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedMethod.IsPublic, Converter={StaticResource BoolToStringConverter}, ConverterParameter='Public:Private'}" Margin="0,0,0,4"/>
+
+                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Parameters:" FontWeight="Bold" Margin="0,0,8,4"/>
+                                            <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedMethod.Parameters.Count}" Margin="0,0,0,4"/>
+
+                                            <TextBlock Grid.Row="4" Grid.Column="0" Text="Complexity Metrics:" FontWeight="Bold" Margin="0,0,8,4"/>
+                                            <StackPanel Grid.Row="4" Grid.Column="1">
+                                                <TextBlock Text="{Binding SelectedMethod.Complexity.CyclomaticComplexity, StringFormat='Cyclomatic Complexity: {0}'}"/>
+                                                <TextBlock Text="{Binding SelectedMethod.LinesOfCode, StringFormat='Lines of Code: {0}'}"/>
+                                                <TextBlock Text="{Binding SelectedMethod.Complexity.NestingDepth, StringFormat='Nesting Depth: {0}'}"/>
+                                                <TextBlock Text="{Binding SelectedMethod.Complexity.MethodCalls, StringFormat='Method Calls: {0}'}"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </StackPanel>
+                                </ScrollViewer>
+                            </Border>
+                        </Grid>
+                    </Grid>
+                </TabItem>
+            </TabControl>
+        </Grid>
+
+        <!-- Status Bar -->
+        <StatusBar Grid.Row="2" Background="{DynamicResource MaterialDesignPrimaryBrush}" 
+                   Foreground="White">
+            <StatusBarItem>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="Status:" Margin="0,0,4,0"/>
+                    <TextBlock Text="{Binding StatusMessage}" FontWeight="Bold"/>
+                </StackPanel>
+            </StatusBarItem>
+            <Separator />
+            <StatusBarItem>
+                <ProgressBar Width="100" Height="16" 
+                           IsIndeterminate="{Binding IsBusy}"
+                           Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
+                           Style="{StaticResource MaterialDesignCircularProgressBar}"/>
+            </StatusBarItem>
+            <Separator />
+            <StatusBarItem HorizontalAlignment="Right">
+                <TextBlock Text="{Binding CurrentProject, StringFormat='Project: {0}'}" Margin="8,0"/>
+            </StatusBarItem>
+        </StatusBar>
+    </Grid>
+</Window>
