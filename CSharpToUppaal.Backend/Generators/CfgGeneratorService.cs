@@ -37,17 +37,44 @@ namespace CSharpToUppaal.Backend.Generators
                     ReturnType = method.ReturnType
                 };
 
-                // Parse method body
+                if (string.IsNullOrEmpty(method.Body))
+                {
+                    Console.WriteLine($"Warning: Method {method.Name} has no body");
+                    throw new InvalidOperationException($"Method {method.Name} has no body to generate CFG from");
+                }
+
+                // Parse method body - it's just a block statement, so parse it directly
                 var tree = CSharpSyntaxTree.ParseText(method.Body);
                 var root = await tree.GetRootAsync();
 
-                var methodNode = root.DescendantNodes()
-                    .OfType<MethodDeclarationSyntax>()
+                // Try to get BlockSyntax directly
+                var blockNode = root.DescendantNodes()
+                    .OfType<BlockSyntax>()
                     .FirstOrDefault();
 
-                if (methodNode == null)
+                BlockSyntax body;
+                
+                if (blockNode != null)
                 {
-                    throw new InvalidOperationException("Method syntax not found");
+                    // Direct block found
+                    body = blockNode;
+                }
+                else
+                {
+                    // Maybe it's a complete method declaration, try that
+                    var methodNode = root.DescendantNodes()
+                        .OfType<MethodDeclarationSyntax>()
+                        .FirstOrDefault();
+
+                    if (methodNode?.Body != null)
+                    {
+                        body = methodNode.Body;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Warning: Could not find method body syntax for {method.Name}");
+                        throw new InvalidOperationException($"Could not parse method body for {method.Name}");
+                    }
                 }
 
                 // Create entry node
@@ -61,8 +88,7 @@ namespace CSharpToUppaal.Backend.Generators
                 cfg.EntryNodeId = entryNode.Id;
 
                 // Process method body
-                var body = methodNode.Body;
-                if (body != null)
+                if (body != null && body.Statements.Any())
                 {
                     var lastNodeId = await ProcessBlockAsync(body, cfg, entryNode.Id);
 
@@ -84,6 +110,19 @@ namespace CSharpToUppaal.Backend.Generators
                     {
                         AddEdge(cfg, entryNode.Id, exitNode.Id);
                     }
+                }
+                else
+                {
+                    // Empty method body - connect entry directly to exit
+                    var exitNode = new CfgNode
+                    {
+                        Label = "Exit",
+                        Type = NodeType.Exit,
+                        Code = $"Return from {method.Name}"
+                    };
+                    cfg.Nodes.Add(exitNode);
+                    cfg.ExitNodeId = exitNode.Id;
+                    AddEdge(cfg, entryNode.Id, exitNode.Id);
                 }
 
                 // Extract variables from parameters

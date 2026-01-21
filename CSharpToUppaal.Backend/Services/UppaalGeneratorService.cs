@@ -152,17 +152,20 @@ namespace CSharpToUppaal.Backend.Services
         {
             try
             {
+                var ntaElement = new XElement("nta",
+                    GenerateGlobalDeclaration(),
+                    GenerateTemplates(model.Templates),
+                    GenerateSystemDeclaration(model.Templates),
+                    GenerateQueries()
+                );
+
                 var xdoc = new XDocument(
                     new XDeclaration("1.0", "utf-8", null),
                     new XDocumentType("nta",
-                        "-//Uppaal Team//DTD Flat System 1.1//EN",
-                        "http://www.it.uu.se/research/group/darts/uppaal/flat-1_2.dtd",
+                        "-//Uppaal Team//DTD Flat System 1.6//EN",
+                        "http://www.it.uu.se/research/group/darts/uppaal/flat-1_6.dtd",
                         null),
-                    new XElement("nta",
-                        GenerateGlobalDeclaration(),
-                        GenerateTemplates(model.Templates),
-                        GenerateSystemDeclaration(model.Templates)
-                    )
+                    ntaElement
                 );
 
                 return xdoc.ToString();
@@ -196,24 +199,22 @@ bool systemActive = true;
             );
         }
 
-        private XElement GenerateTemplates(List<UppaalTemplate> templates)
+        private IEnumerable<XElement> GenerateTemplates(List<UppaalTemplate> templates)
         {
-            var templatesElement = new XElement("templates");
-
+            int templateIndex = 0;
+            
             foreach (var template in templates)
             {
-                var templateElement = new XElement("template",
+                yield return new XElement("template",
                     new XElement("name", template.Name),
                     GenerateTemplateDeclaration(template),
-                    GenerateLocations(template.Locations),
+                    GenerateLocations(template.Locations, templateIndex),
                     GenerateInitialLocation(template.Locations),
                     GenerateTransitions(template.Transitions)
                 );
-
-                templatesElement.Add(templateElement);
+                
+                templateIndex++;
             }
-
-            return templatesElement;
         }
 
         private XElement GenerateTemplateDeclaration(UppaalTemplate template)
@@ -226,15 +227,30 @@ bool systemActive = true;
             );
         }
 
-        private XElement GenerateLocations(List<UppaalLocation> locations)
+        private IEnumerable<XElement> GenerateLocations(List<UppaalLocation> locations, int templateIndex)
         {
-            var locationsElement = new XElement("locations");
+            int locationCount = locations.Count;
+            double radius = Math.Max(150, locationCount * 30);
+            double centerX = 0;
+            double centerY = 0;
+            double angleStep = (2 * Math.PI) / Math.Max(locationCount, 1);
 
-            foreach (var location in locations)
+            for (int i = 0; i < locations.Count; i++)
             {
+                var location = locations[i];
+                double angle = i * angleStep - Math.PI / 2;
+                int x = (int)(centerX + radius * Math.Cos(angle));
+                int y = (int)(centerY + radius * Math.Sin(angle));
+
                 var locationElement = new XElement("location",
                     new XAttribute("id", location.Id),
-                    new XElement("name", location.Name)
+                    new XAttribute("x", x),
+                    new XAttribute("y", y),
+                    new XElement("name",
+                        new XAttribute("x", x),
+                        new XAttribute("y", y - 16),
+                        location.Name
+                    )
                 );
 
                 if (location.IsUrgent)
@@ -247,33 +263,41 @@ bool systemActive = true;
                 {
                     locationElement.Add(new XElement("label",
                         new XAttribute("kind", label.Key),
+                        new XAttribute("x", x),
+                        new XAttribute("y", y + 16),
                         label.Value
                     ));
                 }
 
-                locationsElement.Add(locationElement);
+                yield return locationElement;
             }
-
-            return locationsElement;
         }
 
         private XElement GenerateInitialLocation(List<UppaalLocation> locations)
         {
             var initialLocation = locations.FirstOrDefault(l => l.IsInitial);
-            if (initialLocation == null) return new XElement("init");
+            if (initialLocation == null)
+            {
+                // Default to first location if no initial is set
+                initialLocation = locations.FirstOrDefault();
+            }
+            
+            if (initialLocation == null)
+                return null;
 
             return new XElement("init",
                 new XAttribute("ref", initialLocation.Id)
             );
         }
 
-        private XElement GenerateTransitions(List<UppaalTransition> transitions)
+        private IEnumerable<XElement> GenerateTransitions(List<UppaalTransition> transitions)
         {
-            var transitionsElement = new XElement("transitions");
-
+            int transitionId = 0;
+            
             foreach (var transition in transitions)
             {
                 var transitionElement = new XElement("transition",
+                    new XAttribute("id", $"id{transitionId}"),
                     new XElement("source", new XAttribute("ref", transition.Source)),
                     new XElement("target", new XAttribute("ref", transition.Target))
                 );
@@ -282,6 +306,8 @@ bool systemActive = true;
                 {
                     transitionElement.Add(new XElement("label",
                         new XAttribute("kind", "guard"),
+                        new XAttribute("x", 0),
+                        new XAttribute("y", 0),
                         transition.Guard
                     ));
                 }
@@ -290,6 +316,8 @@ bool systemActive = true;
                 {
                     transitionElement.Add(new XElement("label",
                         new XAttribute("kind", "assignment"),
+                        new XAttribute("x", 0),
+                        new XAttribute("y", 0),
                         transition.Update
                     ));
                 }
@@ -298,6 +326,8 @@ bool systemActive = true;
                 {
                     transitionElement.Add(new XElement("label",
                         new XAttribute("kind", "synchronisation"),
+                        new XAttribute("x", 0),
+                        new XAttribute("y", 0),
                         transition.Synchronization
                     ));
                 }
@@ -306,14 +336,15 @@ bool systemActive = true;
                 {
                     transitionElement.Add(new XElement("label",
                         new XAttribute("kind", "comments"),
+                        new XAttribute("x", 0),
+                        new XAttribute("y", 0),
                         string.Join("\n", transition.Comments)
                     ));
                 }
 
-                transitionsElement.Add(transitionElement);
+                yield return transitionElement;
+                transitionId++;
             }
-
-            return transitionsElement;
         }
 
         private XElement GenerateSystemDeclaration(List<UppaalTemplate> templates)
@@ -323,6 +354,16 @@ bool systemActive = true;
 
             return new XElement("system",
                 new XText(systemText)
+            );
+        }
+
+        private XElement GenerateQueries()
+        {
+            return new XElement("queries",
+                new XElement("query",
+                    new XElement("formula", "A[] not deadlock"),
+                    new XElement("comment", "Verify that the system is deadlock-free")
+                )
             );
         }
     }

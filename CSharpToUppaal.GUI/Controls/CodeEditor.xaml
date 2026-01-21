@@ -10,6 +10,8 @@
                                ShowLineNumbers="True"
                                WordWrap="False"
                                HorizontalScrollBarVisibility="Auto"
-                               VerticalScrollBarVisibility="Auto"/>
+                               VerticalScrollBarVisibility="Auto"
+                               Background="White"
+                               Foreground="Black"/>
     </Grid>
 </UserControl>

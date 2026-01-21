@@ -1,0 +1,168 @@
+<!DOCTYPE nta PUBLIC "-//Uppaal Team//DTD Flat System 1.6//EN" "http://www.it.uu.se/research/group/darts/uppaal/flat-1_6.dtd">
+<nta>
+  <declaration>
+// Global declarations generated from C# code
+typedef int[0,100] id_t;
+broadcast chan request, response;
+clock globalClock;
+
+// Global variables
+int[0,10] globalCounter = 0;
+bool systemActive = true;
+</declaration>
+  <template>
+    <name>Add</name>
+    <declaration>// Function: Add
+// Return type: int
+
+int a;
+int b;
+clock t_Add;
+</declaration>
+    <location id="loc_b6a5db2b_af8c_4c6e_950f_54392da76935" x="0" y="-180">
+      <name x="0" y="-196">Entry</name>
+    </location>
+    <location id="loc_ea552b1d_e5c4_42a9_bf8e_66178f04834a" x="155" y="-90">
+      <name x="155" y="-106">Condition</name>
+      <label kind="comment" x="155" y="-74">/* a &gt; 0 &amp;&amp; b &gt; 0 */</label>
+    </location>
+    <location id="loc_79b2d8b1_46e6_4c9e_8584_b29a8fc007b2" x="155" y="89">
+      <name x="155" y="73">Return</name>
+      <urgent />
+    </location>
+    <location id="loc_f8d3d388_b3b8_4e9b_a467_46b2176d2e31" x="0" y="180">
+      <name x="0" y="164">Return</name>
+      <urgent />
+    </location>
+    <location id="loc_07ecac8a_7108_49ad_a0e1_afdf83585a78" x="-155" y="90">
+      <name x="-155" y="74">Merge</name>
+    </location>
+    <location id="loc_d8fb6a63_7d72_46ce_b486_0702a06e643c" x="-155" y="-89">
+      <name x="-155" y="-105">Exit</name>
+    </location>
+    <init ref="loc_b6a5db2b_af8c_4c6e_950f_54392da76935" />
+    <transition id="id0">
+      <source ref="loc_b6a5db2b_af8c_4c6e_950f_54392da76935" />
+      <target ref="loc_ea552b1d_e5c4_42a9_bf8e_66178f04834a" />
+      <label kind="comments" x="0" y="0">// C#: Start Add</label>
+    </transition>
+    <transition id="id1">
+      <source ref="loc_ea552b1d_e5c4_42a9_bf8e_66178f04834a" />
+      <target ref="loc_79b2d8b1_46e6_4c9e_8584_b29a8fc007b2" />
+      <label kind="guard" x="0" y="0">a &gt; 0 &amp;&amp; b &gt; 0</label>
+      <label kind="comments" x="0" y="0">// C#: a &gt; 0 &amp;&amp; b &gt; 0</label>
+    </transition>
+    <transition id="id2">
+      <source ref="loc_ea552b1d_e5c4_42a9_bf8e_66178f04834a" />
+      <target ref="loc_f8d3d388_b3b8_4e9b_a467_46b2176d2e31" />
+      <label kind="guard" x="0" y="0">a &gt; 0 &amp;&amp; b &gt; 0</label>
+      <label kind="comments" x="0" y="0">// C#: a &gt; 0 &amp;&amp; b &gt; 0</label>
+    </transition>
+    <transition id="id3">
+      <source ref="loc_79b2d8b1_46e6_4c9e_8584_b29a8fc007b2" />
+      <target ref="loc_07ecac8a_7108_49ad_a0e1_afdf83585a78" />
+      <label kind="comments" x="0" y="0">// C#: return a + b;</label>
+    </transition>
+    <transition id="id4">
+      <source ref="loc_f8d3d388_b3b8_4e9b_a467_46b2176d2e31" />
+      <target ref="loc_07ecac8a_7108_49ad_a0e1_afdf83585a78" />
+      <label kind="comments" x="0" y="0">// C#: return 0;</label>
+    </transition>
+    <transition id="id5">
+      <source ref="loc_07ecac8a_7108_49ad_a0e1_afdf83585a78" />
+      <target ref="loc_d8fb6a63_7d72_46ce_b486_0702a06e643c" />
+    </transition>
+  </template>
+  <template>
+    <name>Factorial</name>
+    <declaration>// Function: Factorial
+// Return type: int
+
+int n;
+clock t_Factorial;
+</declaration>
+    <location id="loc_fc13d0ed_d40a_407c_ab0b_3459d4f87b82" x="0" y="-270">
+      <name x="0" y="-286">Entry</name>
+    </location>
+    <location id="loc_860f39f3_fbd7_4177_be86_1a7cdad0a654" x="173" y="-206">
+      <name x="173" y="-222">Declaration</name>
+    </location>
+    <location id="loc_bf6d0b75_10e5_49c0_bbd2_8baede007bca" x="265" y="-46">
+      <name x="265" y="-62">Declaration</name>
+    </location>
+    <location id="loc_a56e8538_7c54_4473_b5d3_ee8a5c195f42" x="233" y="134">
+      <name x="233" y="118">Loop</name>
+      <label kind="comment" x="233" y="150">/* i &lt;= n */</label>
+    </location>
+    <location id="loc_46644641_5d1a_4738_8cab_a31ee21c36b9" x="92" y="253">
+      <name x="92" y="237">Expression</name>
+    </location>
+    <location id="loc_a726b8cf_9f37_49aa_8d0c_37f925f7f6c9" x="-92" y="253">
+      <name x="-92" y="237">For Increment</name>
+    </location>
+    <location id="loc_a088a2ed_5c79_473b_87f7_ab695e0ac6d1" x="-233" y="135">
+      <name x="-233" y="119">For Exit</name>
+    </location>
+    <location id="loc_546808ca_47b3_4efd_87f9_ab94f2128641" x="-265" y="-46">
+      <name x="-265" y="-62">Return</name>
+      <urgent />
+    </location>
+    <location id="loc_15935bd3_2226_46ce_b546_a0924a90c9da" x="-173" y="-206">
+      <name x="-173" y="-222">Exit</name>
+    </location>
+    <init ref="loc_fc13d0ed_d40a_407c_ab0b_3459d4f87b82" />
+    <transition id="id0">
+      <source ref="loc_fc13d0ed_d40a_407c_ab0b_3459d4f87b82" />
+      <target ref="loc_860f39f3_fbd7_4177_be86_1a7cdad0a654" />
+      <label kind="comments" x="0" y="0">// C#: Start Factorial</label>
+    </transition>
+    <transition id="id1">
+      <source ref="loc_860f39f3_fbd7_4177_be86_1a7cdad0a654" />
+      <target ref="loc_bf6d0b75_10e5_49c0_bbd2_8baede007bca" />
+      <label kind="comments" x="0" y="0">// C#: int result = 1;</label>
+    </transition>
+    <transition id="id2">
+      <source ref="loc_bf6d0b75_10e5_49c0_bbd2_8baede007bca" />
+      <target ref="loc_a56e8538_7c54_4473_b5d3_ee8a5c195f42" />
+      <label kind="comments" x="0" y="0">// C#: int i = 2</label>
+    </transition>
+    <transition id="id3">
+      <source ref="loc_a56e8538_7c54_4473_b5d3_ee8a5c195f42" />
+      <target ref="loc_46644641_5d1a_4738_8cab_a31ee21c36b9" />
+      <label kind="guard" x="0" y="0">i &lt;= n</label>
+      <label kind="comments" x="0" y="0">// C#: i &lt;= n</label>
+    </transition>
+    <transition id="id4">
+      <source ref="loc_46644641_5d1a_4738_8cab_a31ee21c36b9" />
+      <target ref="loc_a726b8cf_9f37_49aa_8d0c_37f925f7f6c9" />
+      <label kind="comments" x="0" y="0">// C#: result *= i</label>
+    </transition>
+    <transition id="id5">
+      <source ref="loc_a726b8cf_9f37_49aa_8d0c_37f925f7f6c9" />
+      <target ref="loc_a56e8538_7c54_4473_b5d3_ee8a5c195f42" />
+      <label kind="comments" x="0" y="0">// C#: i++</label>
+    </transition>
+    <transition id="id6">
+      <source ref="loc_a56e8538_7c54_4473_b5d3_ee8a5c195f42" />
+      <target ref="loc_a088a2ed_5c79_473b_87f7_ab695e0ac6d1" />
+      <label kind="guard" x="0" y="0">i &lt;= n</label>
+      <label kind="comments" x="0" y="0">// C#: i &lt;= n</label>
+    </transition>
+    <transition id="id7">
+      <source ref="loc_a088a2ed_5c79_473b_87f7_ab695e0ac6d1" />
+      <target ref="loc_546808ca_47b3_4efd_87f9_ab94f2128641" />
+    </transition>
+    <transition id="id8">
+      <source ref="loc_546808ca_47b3_4efd_87f9_ab94f2128641" />
+      <target ref="loc_15935bd3_2226_46ce_b546_a0924a90c9da" />
+      <label kind="comments" x="0" y="0">// C#: return result;</label>
+    </transition>
+  </template>
+  <system>system Add, Factorial;</system>
+  <queries>
+    <query>
+      <formula>A[] not deadlock</formula>
+      <comment>Verify that the system is deadlock-free</comment>
+    </query>
+  </queries>
+</nta>

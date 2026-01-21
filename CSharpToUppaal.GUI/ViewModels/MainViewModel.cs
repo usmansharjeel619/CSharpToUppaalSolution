@@ -5,10 +5,15 @@ using Microsoft.Win32;
 using System;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
+using System.IO;
+using IOPath = System.IO.Path;
 
 namespace CSharpToUppaal.GUI.ViewModels
 {
@@ -16,6 +21,8 @@ namespace CSharpToUppaal.GUI.ViewModels
     {
         private readonly CSharpToUppaal.Backend.CSharpToUppaalEngine _engine;
         private CSharpToUppaal.Backend.Models.Project _project;
+        private Canvas _cfgCanvas;
+        private Canvas _uppaalCanvas;
 
         [ObservableProperty]
         private string _statusMessage = "Ready";
@@ -70,6 +77,11 @@ namespace Example
         [ObservableProperty]
         private ObservableCollection<CSharpToUppaal.Backend.Models.MethodInfo> _methods = new();
 
+        partial void OnMethodsChanged(ObservableCollection<CSharpToUppaal.Backend.Models.MethodInfo> value)
+        {
+            Console.WriteLine($"Methods collection changed. New count: {value?.Count ?? 0}");
+        }
+
         [ObservableProperty]
         private CSharpToUppaal.Backend.Models.MethodInfo _selectedMethod;
 
@@ -87,7 +99,580 @@ namespace Example
         public MainViewModel()
         {
             _engine = new CSharpToUppaal.Backend.CSharpToUppaalEngine();
+
+            // Test: Add a dummy method to verify binding works
+            Console.WriteLine("MainViewModel constructor called");
+            Console.WriteLine($"Methods collection initialized: {Methods != null}");
+
             LoadSampleProject();
+        }
+
+        public void SetCfgCanvas(Canvas canvas)
+        {
+            _cfgCanvas = canvas;
+        }
+
+        public void SetUppaalCanvas(Canvas canvas)
+        {
+            _uppaalCanvas = canvas;
+        }
+
+        partial void OnSelectedMethodChanged(CSharpToUppaal.Backend.Models.MethodInfo value)
+        {
+            if (value != null && _cfgCanvas != null)
+            {
+                _ = DrawCfgAsync(value);
+            }
+        }
+
+        private async Task DrawCfgAsync(CSharpToUppaal.Backend.Models.MethodInfo method)
+        {
+            try
+            {
+                if (_cfgCanvas == null) return;
+
+                StatusMessage = $"Drawing CFG for {method.Name}...";
+
+                _cfgCanvas.Children.Clear();
+
+                var cfg = await _engine.GenerateCfgForMethodAsync(method);
+
+                // Layout parameters
+                double nodeWidth = 120;
+                double nodeHeight = 60;
+                double horizontalSpacing = 150;
+                double verticalSpacing = 100;
+                double startX = 50;
+                double startY = 50;
+
+                // Calculate positions for nodes (simple vertical layout)
+                var nodePositions = new Dictionary<string, Point>();
+                int row = 0;
+                foreach (var node in cfg.Nodes)
+                {
+                    nodePositions[node.Id] = new Point(
+                        startX + (row % 3) * horizontalSpacing,
+                        startY + (row / 3) * verticalSpacing
+                    );
+                    row++;
+                }
+
+                // Draw edges first (so they appear behind nodes)
+                foreach (var edge in cfg.Edges)
+                {
+                    if (nodePositions.ContainsKey(edge.FromNodeId) &&
+                        nodePositions.ContainsKey(edge.ToNodeId))
+                    {
+                        var fromPos = nodePositions[edge.FromNodeId];
+                        var toPos = nodePositions[edge.ToNodeId];
+
+                        var line = new Line
+                        {
+                            X1 = fromPos.X + nodeWidth / 2,
+                            Y1 = fromPos.Y + nodeHeight / 2,
+                            X2 = toPos.X + nodeWidth / 2,
+                            Y2 = toPos.Y + nodeHeight / 2,
+                            Stroke = Brushes.Black,
+                            StrokeThickness = 2
+                        };
+
+                        _cfgCanvas.Children.Add(line);
+
+                        // Add arrow head
+                        var angle = Math.Atan2(toPos.Y - fromPos.Y, toPos.X - fromPos.X);
+                        var arrowSize = 10;
+
+                        var arrow = new Polygon
+                        {
+                            Fill = Brushes.Black,
+                            Points = new PointCollection
+                            {
+                                new Point(toPos.X + nodeWidth / 2, toPos.Y + nodeHeight / 2),
+                                new Point(
+                                    toPos.X + nodeWidth / 2 - arrowSize * Math.Cos(angle - Math.PI / 6),
+                                    toPos.Y + nodeHeight / 2 - arrowSize * Math.Sin(angle - Math.PI / 6)
+                                ),
+                                new Point(
+                                    toPos.X + nodeWidth / 2 - arrowSize * Math.Cos(angle + Math.PI / 6),
+                                    toPos.Y + nodeHeight / 2 - arrowSize * Math.Sin(angle + Math.PI / 6)
+                                )
+                            }
+                        };
+                        _cfgCanvas.Children.Add(arrow);
+
+                        // Add edge label if present
+                        if (!string.IsNullOrEmpty(edge.Label))
+                        {
+                            var label = new TextBlock
+                            {
+                                Text = edge.Label,
+                                FontSize = 10,
+                                Background = Brushes.White
+                            };
+                            Canvas.SetLeft(label, (fromPos.X + toPos.X) / 2 + nodeWidth / 4);
+                            Canvas.SetTop(label, (fromPos.Y + toPos.Y) / 2 + nodeHeight / 4);
+                            _cfgCanvas.Children.Add(label);
+                        }
+                    }
+                }
+
+                // Draw nodes
+                foreach (var node in cfg.Nodes)
+                {
+                    if (!nodePositions.ContainsKey(node.Id)) continue;
+
+                    var pos = nodePositions[node.Id];
+
+                    // Choose color based on node type
+                    var fillColor = node.Type switch
+                    {
+                        CSharpToUppaal.Backend.Models.NodeType.Entry => Brushes.LightGreen,
+                        CSharpToUppaal.Backend.Models.NodeType.Exit => Brushes.LightCoral,
+                        CSharpToUppaal.Backend.Models.NodeType.Condition => Brushes.LightBlue,
+                        CSharpToUppaal.Backend.Models.NodeType.Loop => Brushes.LightYellow,
+                        _ => Brushes.LightGray
+                    };
+
+                    // Draw node shape
+                    Shape shape;
+                    if (node.Type == CSharpToUppaal.Backend.Models.NodeType.Condition ||
+                        node.Type == CSharpToUppaal.Backend.Models.NodeType.Loop)
+                    {
+                        // Diamond for conditions and loops
+                        shape = new Polygon
+                        {
+                            Points = new PointCollection
+                            {
+                                new Point(pos.X + nodeWidth / 2, pos.Y),
+                                new Point(pos.X + nodeWidth, pos.Y + nodeHeight / 2),
+                                new Point(pos.X + nodeWidth / 2, pos.Y + nodeHeight),
+                                new Point(pos.X, pos.Y + nodeHeight / 2)
+                            },
+                            Fill = fillColor,
+                            Stroke = Brushes.Black,
+                            StrokeThickness = 2
+                        };
+                    }
+                    else if (node.Type == CSharpToUppaal.Backend.Models.NodeType.Entry ||
+                             node.Type == CSharpToUppaal.Backend.Models.NodeType.Exit)
+                    {
+                        // Ellipse for entry/exit
+                        shape = new Ellipse
+                        {
+                            Width = nodeWidth,
+                            Height = nodeHeight,
+                            Fill = fillColor,
+                            Stroke = Brushes.Black,
+                            StrokeThickness = 2
+                        };
+                        Canvas.SetLeft(shape, pos.X);
+                        Canvas.SetTop(shape, pos.Y);
+                    }
+                    else
+                    {
+                        // Rectangle for other nodes
+                        shape = new Rectangle
+                        {
+                            Width = nodeWidth,
+                            Height = nodeHeight,
+                            Fill = fillColor,
+                            Stroke = Brushes.Black,
+                            StrokeThickness = 2,
+                            RadiusX = 5,
+                            RadiusY = 5
+                        };
+                        Canvas.SetLeft(shape, pos.X);
+                        Canvas.SetTop(shape, pos.Y);
+                    }
+
+                    _cfgCanvas.Children.Add(shape);
+
+                    // Add node label
+                    var text = new TextBlock
+                    {
+                        Text = node.Label,
+                        FontSize = 12,
+                        FontWeight = FontWeights.Bold,
+                        Foreground = Brushes.Black,
+                        TextAlignment = TextAlignment.Center,
+                        Width = nodeWidth,
+                        TextWrapping = TextWrapping.Wrap
+                    };
+                    Canvas.SetLeft(text, pos.X);
+                    Canvas.SetTop(text, pos.Y + 5);
+                    _cfgCanvas.Children.Add(text);
+
+                    // Add node code (truncated)
+                    if (!string.IsNullOrEmpty(node.Code))
+                    {
+                        var codeText = node.Code.Length > 20 ?
+                            node.Code.Substring(0, 17) + "..." : node.Code;
+
+                        var code = new TextBlock
+                        {
+                            Text = codeText,
+                            FontSize = 9,
+                            Foreground = Brushes.Black,
+                            TextAlignment = TextAlignment.Center,
+                            Width = nodeWidth,
+                            TextWrapping = TextWrapping.Wrap
+                        };
+                        Canvas.SetLeft(code, pos.X);
+                        Canvas.SetTop(code, pos.Y + 25);
+                        _cfgCanvas.Children.Add(code);
+                    }
+                }
+
+                // Update canvas size
+                if (nodePositions.Any())
+                {
+                    var maxX = nodePositions.Values.Max(p => p.X) + nodeWidth + 50;
+                    var maxY = nodePositions.Values.Max(p => p.Y) + nodeHeight + 50;
+                    _cfgCanvas.Width = Math.Max(800, maxX);
+                    _cfgCanvas.Height = Math.Max(600, maxY);
+                }
+
+                StatusMessage = $"CFG drawn for {method.Name} ({cfg.Nodes.Count} nodes)";
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Error drawing CFG: {ex.Message}";
+            }
+        }
+
+        private async Task DrawUppaalModelAsync(CSharpToUppaal.Backend.Models.UppaalModel model)
+        {
+            try
+            {
+                if (_uppaalCanvas == null) return;
+
+                StatusMessage = $"Drawing UPPAAL model visualization...";
+
+                _uppaalCanvas.Children.Clear();
+
+                if (model.Templates == null || !model.Templates.Any())
+                {
+                    // Show message if no templates
+                    var noDataText = new TextBlock
+                    {
+                        Text = "No templates found in UPPAAL model.\nGenerate a model to see visualization.",
+                        FontSize = 16,
+                        Foreground = Brushes.Gray,
+                        TextAlignment = TextAlignment.Center
+                    };
+                    Canvas.SetLeft(noDataText, 400);
+                    Canvas.SetTop(noDataText, 300);
+                    _uppaalCanvas.Children.Add(noDataText);
+                    return;
+                }
+
+                // Layout parameters
+                double locationWidth = 100;
+                double locationHeight = 70;
+                double horizontalSpacing = 180;
+                double verticalSpacing = 150;
+                double startX = 80;
+                double startY = 80;
+
+                // Calculate total height needed for all templates
+                double totalHeight = startY;
+                foreach (var template in model.Templates)
+                {
+                    int locationCount = template.Locations.Count;
+                    double radius = Math.Max(150, locationCount * 30);
+                    totalHeight += radius * 2 + 200; // Space for template + legend + padding
+                }
+                totalHeight += 100; // Extra bottom padding
+
+                // Set canvas height dynamically
+                _uppaalCanvas.Height = Math.Max(800, totalHeight);
+                _uppaalCanvas.Width = 1200;
+
+                int templateOffset = 0;
+
+                foreach (var template in model.Templates)
+                {
+                    // Add template title
+                    var title = new TextBlock
+                    {
+                        Text = $"Template: {template.Name}",
+                        FontSize = 18,
+                        FontWeight = FontWeights.Bold,
+                        Foreground = new SolidColorBrush(Color.FromRgb(44, 62, 80))
+                    };
+                    Canvas.SetLeft(title, startX);
+                    Canvas.SetTop(title, startY + templateOffset - 40);
+                    _uppaalCanvas.Children.Add(title);
+
+                    // Calculate positions for locations (circular layout)
+                    var locationPositions = new Dictionary<string, Point>();
+                    int locationCount = template.Locations.Count;
+                    double radius = Math.Max(150, locationCount * 30);
+                    double angleStep = 2 * Math.PI / Math.Max(locationCount, 1);
+
+                    for (int i = 0; i < template.Locations.Count; i++)
+                    {
+                        var location = template.Locations[i];
+                        double angle = i * angleStep - Math.PI / 2; // Start from top
+                        double x = startX + radius + radius * Math.Cos(angle);
+                        double y = startY + templateOffset + radius + radius * Math.Sin(angle);
+                        locationPositions[location.Id] = new Point(x, y);
+                    }
+
+                    // Draw transitions first (so they appear behind locations)
+                    foreach (var transition in template.Transitions)
+                    {
+                        if (locationPositions.ContainsKey(transition.Source) &&
+                            locationPositions.ContainsKey(transition.Target))
+                        {
+                            var fromPos = locationPositions[transition.Source];
+                            var toPos = locationPositions[transition.Target];
+
+                            // Check if it's a self-loop
+                            if (transition.Source == transition.Target)
+                            {
+                                // Draw self-loop as an arc
+                                var loopPath = new System.Windows.Shapes.Path
+                                {
+                                    Stroke = Brushes.DarkBlue,
+                                    StrokeThickness = 2,
+                                    Data = new PathGeometry
+                                    {
+                                        Figures = new PathFigureCollection
+                                        {
+                                            new PathFigure
+                                            {
+                                                StartPoint = new Point(fromPos.X + locationWidth / 2, fromPos.Y),
+                                                Segments = new PathSegmentCollection
+                                                {
+                                                    new ArcSegment
+                                                    {
+                                                        Point = new Point(fromPos.X + locationWidth, fromPos.Y + locationHeight / 2),
+                                                        Size = new Size(30, 30),
+                                                        SweepDirection = SweepDirection.Clockwise,
+                                                        IsLargeArc = false
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                };
+                                _uppaalCanvas.Children.Add(loopPath);
+                            }
+                            else
+                            {
+                                // Draw transition line
+                                var line = new Line
+                                {
+                                    X1 = fromPos.X + locationWidth / 2,
+                                    Y1 = fromPos.Y + locationHeight / 2,
+                                    X2 = toPos.X + locationWidth / 2,
+                                    Y2 = toPos.Y + locationHeight / 2,
+                                    Stroke = Brushes.DarkBlue,
+                                    StrokeThickness = 2
+                                };
+                                _uppaalCanvas.Children.Add(line);
+
+                                // Add arrow head
+                                var angle = Math.Atan2(toPos.Y - fromPos.Y, toPos.X - fromPos.X);
+                                var arrowSize = 12;
+
+                                var arrow = new Polygon
+                                {
+                                    Fill = Brushes.DarkBlue,
+                                    Points = new PointCollection
+                                    {
+                                        new Point(toPos.X + locationWidth / 2, toPos.Y + locationHeight / 2),
+                                        new Point(
+                                            toPos.X + locationWidth / 2 - arrowSize * Math.Cos(angle - Math.PI / 6),
+                                            toPos.Y + locationHeight / 2 - arrowSize * Math.Sin(angle - Math.PI / 6)
+                                        ),
+                                        new Point(
+                                            toPos.X + locationWidth / 2 - arrowSize * Math.Cos(angle + Math.PI / 6),
+                                            toPos.Y + locationHeight / 2 - arrowSize * Math.Sin(angle + Math.PI / 6)
+                                        )
+                                    }
+                                };
+                                _uppaalCanvas.Children.Add(arrow);
+                            }
+
+                            // Add transition labels
+                            var labelY = (fromPos.Y + toPos.Y) / 2;
+                            var labelX = (fromPos.X + toPos.X) / 2;
+
+                            if (!string.IsNullOrEmpty(transition.Guard) || 
+                                !string.IsNullOrEmpty(transition.Update) || 
+                                !string.IsNullOrEmpty(transition.Synchronization))
+                            {
+                                var labels = new List<string>();
+                                if (!string.IsNullOrEmpty(transition.Guard)) labels.Add($"[{transition.Guard}]");
+                                if (!string.IsNullOrEmpty(transition.Synchronization)) labels.Add(transition.Synchronization);
+                                if (!string.IsNullOrEmpty(transition.Update)) labels.Add(transition.Update);
+
+                                var label = new TextBlock
+                                {
+                                    Text = string.Join("\n", labels),
+                                    FontSize = 10,
+                                    Background = Brushes.White,
+                                    Foreground = Brushes.DarkBlue,
+                                    Padding = new Thickness(2)
+                                };
+                                Canvas.SetLeft(label, labelX + locationWidth / 4);
+                                Canvas.SetTop(label, labelY);
+                                _uppaalCanvas.Children.Add(label);
+                            }
+                        }
+                    }
+
+                    // Draw locations
+                    foreach (var location in template.Locations)
+                    {
+                        if (!locationPositions.ContainsKey(location.Id)) continue;
+
+                        var pos = locationPositions[location.Id];
+
+                        // Choose color based on location type
+                        Brush fillColor = Brushes.LightSteelBlue;
+                        if (location.IsInitial)
+                            fillColor = new SolidColorBrush(Color.FromRgb(144, 238, 144)); // Light green
+                        else if (location.IsUrgent)
+                            fillColor = new SolidColorBrush(Color.FromRgb(255, 160, 122)); // Light salmon
+                        else if (location.IsCommitted)
+                            fillColor = new SolidColorBrush(Color.FromRgb(255, 218, 185)); // Peach
+
+                        // Draw location circle
+                        var ellipse = new Ellipse
+                        {
+                            Width = locationWidth,
+                            Height = locationHeight,
+                            Fill = fillColor,
+                            Stroke = Brushes.Black,
+                            StrokeThickness = 2
+                        };
+                        Canvas.SetLeft(ellipse, pos.X);
+                        Canvas.SetTop(ellipse, pos.Y);
+                        _uppaalCanvas.Children.Add(ellipse);
+
+                        // Draw double circle for initial location
+                        if (location.IsInitial)
+                        {
+                            var innerEllipse = new Ellipse
+                            {
+                                Width = locationWidth - 8,
+                                Height = locationHeight - 8,
+                                Fill = Brushes.Transparent,
+                                Stroke = Brushes.Black,
+                                StrokeThickness = 2
+                            };
+                            Canvas.SetLeft(innerEllipse, pos.X + 4);
+                            Canvas.SetTop(innerEllipse, pos.Y + 4);
+                            _uppaalCanvas.Children.Add(innerEllipse);
+                        }
+
+                        // Add location name
+                        var locationName = new TextBlock
+                        {
+                            Text = location.Name,
+                            FontSize = 12,
+                            FontWeight = FontWeights.Bold,
+                            Foreground = Brushes.Black,
+                            TextAlignment = TextAlignment.Center,
+                            Width = locationWidth
+                        };
+                        Canvas.SetLeft(locationName, pos.X);
+                        Canvas.SetTop(locationName, pos.Y + locationHeight / 2 - 8);
+                        _uppaalCanvas.Children.Add(locationName);
+
+                        // Add labels (invariant, etc.)
+                        if (location.Labels != null && location.Labels.Any())
+                        {
+                            var labelText = string.Join(", ", location.Labels.Select(l => $"{l.Key}:{l.Value}"));
+                            if (!string.IsNullOrEmpty(labelText))
+                            {
+                                var labels = new TextBlock
+                                {
+                                    Text = labelText,
+                                    FontSize = 9,
+                                    Foreground = Brushes.DarkSlateGray,
+                                    TextAlignment = TextAlignment.Center,
+                                    Width = locationWidth + 40,
+                                    TextWrapping = TextWrapping.Wrap
+                                };
+                                Canvas.SetLeft(labels, pos.X - 20);
+                                Canvas.SetTop(labels, pos.Y + locationHeight + 5);
+                                _uppaalCanvas.Children.Add(labels);
+                            }
+                        }
+                    }
+
+                    // Add legend
+                    if (templateOffset == 0) // Only for first template
+                    {
+                        // Position legend in top right corner
+                        var legendY = 20; // Top of canvas
+                        var legendX = _uppaalCanvas.Width - 200; // Right side with 200px width for legend
+
+                        var legendTitle = new TextBlock
+                        {
+                            Text = "Legend:",
+                            FontSize = 12,
+                            FontWeight = FontWeights.Bold,
+                            Foreground = Brushes.Black
+                        };
+                        Canvas.SetLeft(legendTitle, legendX);
+                        Canvas.SetTop(legendTitle, legendY);
+                        _uppaalCanvas.Children.Add(legendTitle);
+
+                        var legendItems = new[]
+                        {
+                            ("Initial Location", Color.FromRgb(144, 238, 144)),
+                            ("Urgent Location", Color.FromRgb(255, 160, 122)),
+                            ("Committed Location", Color.FromRgb(255, 218, 185)),
+                            ("Normal Location", Colors.LightSteelBlue)
+                        };
+
+                        for (int i = 0; i < legendItems.Length; i++)
+                        {
+                            var (text, color) = legendItems[i];
+                            var itemY = legendY + 25 + i * 25;
+
+                            var circle = new Ellipse
+                            {
+                                Width = 15,
+                                Height = 15,
+                                Fill = new SolidColorBrush(color),
+                                Stroke = Brushes.Black,
+                                StrokeThickness = 1
+                            };
+                            Canvas.SetLeft(circle, legendX);
+                            Canvas.SetTop(circle, itemY);
+                            _uppaalCanvas.Children.Add(circle);
+
+                            var label = new TextBlock
+                            {
+                                Text = text,
+                                FontSize = 11,
+                                Foreground = Brushes.Black,
+                                VerticalAlignment = VerticalAlignment.Center
+                            };
+                            Canvas.SetLeft(label, legendX + 25);
+                            Canvas.SetTop(label, itemY);
+                            _uppaalCanvas.Children.Add(label);
+                        }
+                    }
+
+                    templateOffset += (int)(radius * 2 + 200);
+                }
+
+                StatusMessage = $"UPPAAL model visualization complete - {model.Templates.Count} template(s)";
+
+                await Task.CompletedTask;
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Error drawing UPPAAL model: {ex.Message}";
+                Console.WriteLine($"Error in DrawUppaalModelAsync: {ex.Message}\n{ex.StackTrace}");
+            }
         }
 
         private async void LoadSampleProject()
@@ -97,30 +682,43 @@ namespace Example
                 IsBusy = true;
                 StatusMessage = "Loading sample project...";
 
+                Console.WriteLine("Creating project...");
                 _project = await _engine.CreateProjectAsync("Sample Project", "Demo project with sample code");
                 CurrentProjectName = _project.Name;
+                Console.WriteLine($"Project created: {_project.Name}");
 
+                Console.WriteLine($"Adding source code (length: {SourceCode.Length})...");
                 var sourceFile = await _engine.AddSourceCodeAsync(_project, SourceCode, "Sample.cs");
+                Console.WriteLine($"Source file added. Methods found: {sourceFile.Methods.Count}");
 
                 Methods.Clear();
                 foreach (var method in sourceFile.Methods)
                 {
+                    Console.WriteLine($"Adding method: {method.Name}, ReturnType: {method.ReturnType}");
                     Methods.Add(method);
                 }
+                Console.WriteLine($"Total methods in collection: {Methods.Count}");
 
                 if (Methods.Any())
                 {
                     SelectedMethod = Methods.First();
+                    Console.WriteLine($"Selected method: {SelectedMethod.Name}");
+                }
+                else
+                {
+                    Console.WriteLine("WARNING: No methods found!");
                 }
 
                 UpdateProjectTree();
 
-                StatusMessage = "Sample project loaded";
+                StatusMessage = $"Sample project loaded with {Methods.Count} methods";
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"ERROR in LoadSampleProject: {ex.Message}");
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
                 StatusMessage = $"Error loading sample: {ex.Message}";
-                MessageBox.Show($"Error loading sample project: {ex.Message}", "Error",
+                MessageBox.Show($"Error loading sample project: {ex.Message}\n\n{ex.StackTrace}", "Error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally
@@ -143,7 +741,7 @@ namespace Example
             {
                 var fileNode = new TreeItemViewModel
                 {
-                    Name = Path.GetFileName(sourceFile.FilePath),
+                    Name = IOPath.GetFileName(sourceFile.FilePath),
                     Icon = "FileCode"
                 };
 
@@ -216,7 +814,7 @@ namespace Example
                     if (_project == null)
                     {
                         _project = await _engine.CreateProjectAsync(
-                            Path.GetFileNameWithoutExtension(openFileDialog.FileName));
+                            IOPath.GetFileNameWithoutExtension(openFileDialog.FileName));
                         CurrentProjectName = _project.Name;
                     }
 
@@ -236,7 +834,7 @@ namespace Example
 
                     UpdateProjectTree();
 
-                    StatusMessage = $"Loaded {sourceFile.Methods.Count} methods from {Path.GetFileName(openFileDialog.FileName)}";
+                    StatusMessage = $"Loaded {sourceFile.Methods.Count} methods from {IOPath.GetFileName(openFileDialog.FileName)}";
                 }
             }
             catch (Exception ex)
@@ -262,33 +860,65 @@ namespace Example
                 IsBusy = true;
                 StatusMessage = "Parsing C# code...";
 
+                Console.WriteLine("=== ParseCode called ===");
+                Console.WriteLine($"Source code length: {SourceCode?.Length ?? 0}");
+
+                if (string.IsNullOrWhiteSpace(SourceCode))
+                {
+                    Console.WriteLine("ERROR: Source code is empty!");
+                    MessageBox.Show("Please enter some C# code first", "No Code",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
                 if (_project == null)
                 {
+                    Console.WriteLine("Creating new project...");
                     _project = await _engine.CreateProjectAsync("Parsed Project");
                     CurrentProjectName = _project.Name;
                 }
 
+                Console.WriteLine("Adding source code to project...");
                 var sourceFile = await _engine.AddSourceCodeAsync(_project, SourceCode, "Source.cs");
+                Console.WriteLine($"Source file added. Methods count: {sourceFile.Methods.Count}");
 
                 Methods.Clear();
+                Console.WriteLine("Cleared Methods collection");
+
                 foreach (var method in sourceFile.Methods)
                 {
+                    Console.WriteLine($"Adding method: {method.Name} (ReturnType: {method.ReturnType}, LOC: {method.LinesOfCode})");
                     Methods.Add(method);
                 }
+
+                Console.WriteLine($"Total methods in collection after adding: {Methods.Count}");
 
                 if (Methods.Any())
                 {
                     SelectedMethod = Methods.First();
+                    Console.WriteLine($"Selected first method: {SelectedMethod.Name}");
+                }
+                else
+                {
+                    Console.WriteLine("WARNING: Methods collection is empty after parsing!");
                 }
 
                 UpdateProjectTree();
 
                 StatusMessage = $"Parsed {sourceFile.Methods.Count} methods";
+                Console.WriteLine($"=== ParseCode completed with {Methods.Count} methods ===");
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"ERROR in ParseCode: {ex.Message}");
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                if (ex.InnerException != null)
+                {
+                    Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                    Console.WriteLine($"Inner stack trace: {ex.InnerException.StackTrace}");
+                }
                 StatusMessage = $"Error parsing code: {ex.Message}";
-                MessageBox.Show($"Error parsing code: {ex.Message}", "Error",
+                MessageBox.Show($"Error parsing code: {ex.Message}\n\n{ex.StackTrace}", "Error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally
@@ -334,30 +964,13 @@ namespace Example
                     return;
                 }
 
-                IsBusy = true;
-                StatusMessage = $"Generating CFG for {SelectedMethod.Name}...";
-
-                var cfg = await _engine.GenerateCfgForMethodAsync(SelectedMethod);
-                var dotGraph = await _engine.GenerateDotGraphAsync(cfg);
-
-                StatusMessage = $"Generated CFG for {SelectedMethod.Name} with {cfg.Nodes.Count} nodes";
-
-                MessageBox.Show($"CFG generated for {SelectedMethod.Name}:\n" +
-                              $"- Nodes: {cfg.Nodes.Count}\n" +
-                              $"- Edges: {cfg.Edges.Count}\n" +
-                              $"- Entry: {cfg.EntryNodeId}\n" +
-                              $"- Exit: {cfg.ExitNodeId}",
-                              "CFG Generated", MessageBoxButton.OK, MessageBoxImage.Information);
+                await DrawCfgAsync(SelectedMethod);
             }
             catch (Exception ex)
             {
                 StatusMessage = $"Error generating CFG: {ex.Message}";
                 MessageBox.Show($"Error generating CFG: {ex.Message}", "Error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            finally
-            {
-                IsBusy = false;
             }
         }
 
@@ -379,6 +992,9 @@ namespace Example
                 var model = await _engine.GenerateModelAsync(_project, ModelName);
                 UppaalXml = model.XmlContent;
                 IsXmlReadOnly = false;
+
+                // Render visual preview
+                await DrawUppaalModelAsync(model);
 
                 StatusMessage = $"Generated UPPAAL model '{model.Name}' with {model.Templates.Count} templates";
 
@@ -488,7 +1104,7 @@ namespace Example
 
                     await _engine.ExportUppaalModelAsync(model, saveFileDialog.FileName);
 
-                    StatusMessage = $"Model exported to {Path.GetFileName(saveFileDialog.FileName)}";
+                    StatusMessage = $"Model exported to {IOPath.GetFileName(saveFileDialog.FileName)}";
 
                     MessageBox.Show($"UPPAAL model exported successfully to:\n{saveFileDialog.FileName}",
                                   "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -536,13 +1152,13 @@ namespace Example
                     var cfg = await _engine.GenerateCfgForMethodAsync(SelectedMethod);
                     var dotGraph = await _engine.GenerateDotGraphAsync(cfg);
 
-                    await File.WriteAllTextAsync(saveFileDialog.FileName, dotGraph);
+                    await System.IO.File.WriteAllTextAsync(saveFileDialog.FileName, dotGraph);
 
-                    StatusMessage = $"CFG exported to {Path.GetFileName(saveFileDialog.FileName)}";
+                    StatusMessage = $"CFG exported to {IOPath.GetFileName(saveFileDialog.FileName)}";
 
                     MessageBox.Show($"CFG exported as DOT file:\n{saveFileDialog.FileName}\n\n" +
                                   "You can visualize it with Graphviz:\n" +
-                                  $"dot -Tpng \"{saveFileDialog.FileName}\" -o \"{Path.ChangeExtension(saveFileDialog.FileName, ".png")}\"",
+                                  $"dot -Tpng \"{saveFileDialog.FileName}\" -o \"{IOPath.ChangeExtension(saveFileDialog.FileName, ".png")}\"",
                                   "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
             }
@@ -556,6 +1172,168 @@ namespace Example
             {
                 IsBusy = false;
             }
+        }
+
+        [RelayCommand]
+        private async Task ExportCfgPng()
+        {
+            try
+            {
+                if (_cfgCanvas == null || _cfgCanvas.Children.Count == 0)
+                {
+                    MessageBox.Show("Please generate a CFG first", "No CFG to Export",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                var saveFileDialog = new SaveFileDialog
+                {
+                    Filter = "PNG Image (*.png)|*.png|All files (*.*)|*.*",
+                    Title = "Export CFG as PNG",
+                    FileName = SelectedMethod != null ? $"{SelectedMethod.Name}_CFG.png" : "CFG.png"
+                };
+
+                if (saveFileDialog.ShowDialog() == true)
+                {
+                    IsBusy = true;
+                    StatusMessage = "Exporting CFG as PNG...";
+
+                    // Get the actual size of the canvas content
+                    double minX = double.MaxValue, minY = double.MaxValue;
+                    double maxX = double.MinValue, maxY = double.MinValue;
+
+                    foreach (UIElement element in _cfgCanvas.Children)
+                    {
+                        double left = Canvas.GetLeft(element);
+                        double top = Canvas.GetTop(element);
+
+                        if (!double.IsNaN(left) && !double.IsNaN(top))
+                        {
+                            minX = Math.Min(minX, left);
+                            minY = Math.Min(minY, top);
+
+                            if (element is FrameworkElement fe)
+                            {
+                                maxX = Math.Max(maxX, left + fe.ActualWidth);
+                                maxY = Math.Max(maxY, top + fe.ActualHeight);
+                            }
+                        }
+                    }
+
+                    // Add padding
+                    double padding = 50;
+                    minX = Math.Max(0, minX - padding);
+                    minY = Math.Max(0, minY - padding);
+                    maxX += padding;
+                    maxY += padding;
+
+                    // Calculate dimensions
+                    int width = (int)(maxX - minX);
+                    int height = (int)(maxY - minY);
+
+                    if (width <= 0 || height <= 0)
+                    {
+                        width = (int)_cfgCanvas.ActualWidth;
+                        height = (int)_cfgCanvas.ActualHeight;
+                    }
+
+                    // Create RenderTargetBitmap
+                    var renderBitmap = new RenderTargetBitmap(
+                        width,
+                        height,
+                        96, // DPI X
+                        96, // DPI Y
+                        PixelFormats.Pbgra32);
+
+                    // Render the canvas to bitmap
+                    _cfgCanvas.Measure(new Size(width, height));
+                    _cfgCanvas.Arrange(new Rect(new Size(width, height)));
+                    renderBitmap.Render(_cfgCanvas);
+
+                    // Save as PNG
+                    var encoder = new PngBitmapEncoder();
+                    encoder.Frames.Add(BitmapFrame.Create(renderBitmap));
+
+                    using (var fileStream = new FileStream(saveFileDialog.FileName, FileMode.Create))
+                    {
+                        encoder.Save(fileStream);
+                    }
+
+                    StatusMessage = $"CFG exported to {IOPath.GetFileName(saveFileDialog.FileName)}";
+
+                    MessageBox.Show($"CFG exported as PNG image:\n{saveFileDialog.FileName}",
+                                  "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Error exporting PNG: {ex.Message}";
+                MessageBox.Show($"Error exporting CFG as PNG: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                IsBusy = false;
+            }
+        }
+
+        [RelayCommand]
+        private async Task ToggleXmlView()
+        {
+            try
+            {
+                // Parse the current XML and refresh visual preview
+                if (!string.IsNullOrWhiteSpace(UppaalXml) && !UppaalXml.Contains("<!--"))
+                {
+                    StatusMessage = "Refreshing visual preview...";
+                    
+                    // Create a model from current XML
+                    var model = new CSharpToUppaal.Backend.Models.UppaalModel
+                    {
+                        Name = ModelName,
+                        XmlContent = UppaalXml,
+                        Templates = new List<CSharpToUppaal.Backend.Models.UppaalTemplate>()
+                    };
+
+                    // Try to parse XML and extract templates (basic parsing)
+                    await ParseAndDrawUppaalXml(UppaalXml);
+                    
+                    StatusMessage = "Visual preview refreshed";
+                }
+                else
+                {
+                    StatusMessage = "Generate a UPPAAL model first to see visual preview";
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Error refreshing preview: {ex.Message}";
+            }
+        }
+
+        private async Task ParseAndDrawUppaalXml(string xml)
+        {
+            // For now, just show a message that the model needs to be regenerated
+            // A full XML parser would be needed for complete functionality
+            if (_uppaalCanvas != null)
+            {
+                _uppaalCanvas.Children.Clear();
+                
+                var messageText = new TextBlock
+                {
+                    Text = "Visual preview updated.\nNote: To see the latest changes, regenerate the model.",
+                    FontSize = 14,
+                    Foreground = Brushes.Gray,
+                    TextAlignment = TextAlignment.Center,
+                    TextWrapping = TextWrapping.Wrap,
+                    Width = 400
+                };
+                Canvas.SetLeft(messageText, 400);
+                Canvas.SetTop(messageText, 300);
+                _uppaalCanvas.Children.Add(messageText);
+            }
+            
+            await Task.CompletedTask;
         }
 
         [RelayCommand]
@@ -582,6 +1360,7 @@ namespace Example
                 VerificationResults.Clear();
                 VerificationStatus = "Not run";
                 ProjectItems.Clear();
+                if (_cfgCanvas != null) _cfgCanvas.Children.Clear();
                 StatusMessage = "All data cleared";
             }
         }
