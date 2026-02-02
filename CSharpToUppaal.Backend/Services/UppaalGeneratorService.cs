@@ -205,12 +205,15 @@ bool systemActive = true;
             
             foreach (var template in templates)
             {
+                // Store position info for transition generation
+                var (locationElements, positionMap, levels) = GenerateLocationsWithPositions(template.Locations, template.Transitions, templateIndex);
+                
                 yield return new XElement("template",
                     new XElement("name", template.Name),
                     GenerateTemplateDeclaration(template),
-                    GenerateLocations(template.Locations, templateIndex),
+                    locationElements,
                     GenerateInitialLocation(template.Locations),
-                    GenerateTransitions(template.Transitions)
+                    GenerateTransitions(template.Transitions, positionMap, levels)
                 );
                 
                 templateIndex++;
@@ -227,32 +230,177 @@ bool systemActive = true;
             );
         }
 
-        private IEnumerable<XElement> GenerateLocations(List<UppaalLocation> locations, int templateIndex)
+        private (IEnumerable<XElement> elements, Dictionary<string, (int x, int y)> positions, Dictionary<string, int> levels) 
+            GenerateLocationsWithPositions(List<UppaalLocation> locations, List<UppaalTransition> transitions, int templateIndex)
         {
-            // Use a hierarchical top-to-bottom layout similar to CFG visualization
-            int locationCount = locations.Count;
-            double nodeWidth = 120;
-            double nodeHeight = 60;
+            var locationElements = new List<XElement>();
+            
+            // Reduced spacing for better compact layout
             double horizontalSpacing = 200;
-            double verticalSpacing = 120;
+            double verticalSpacing = 100;
             double startX = 0;
-            double startY = 0;
+            double startY = -200;
 
-            for (int i = 0; i < locations.Count; i++)
+            // Build adjacency graph to understand structure
+            var outgoing = new Dictionary<string, List<string>>();
+            var incoming = new Dictionary<string, List<string>>();
+            
+            foreach (var trans in transitions)
             {
-                var location = locations[i];
+                if (!outgoing.ContainsKey(trans.Source))
+                    outgoing[trans.Source] = new List<string>();
+                if (!incoming.ContainsKey(trans.Target))
+                    incoming[trans.Target] = new List<string>();
+                    
+                outgoing[trans.Source].Add(trans.Target);
+                incoming[trans.Target].Add(trans.Source);
+            }
+            
+            // Assign levels using modified BFS that handles cycles properly
+            var levels = new Dictionary<string, int>();
+            var visited = new HashSet<string>();
+            var entryLoc = locations.FirstOrDefault(l => l.Name == "Entry" || l.IsInitial);
+            
+            // First pass: Identify back-edges (edges that go to already visited or same-level nodes)
+            var backEdges = new HashSet<(string, string)>();
+            
+            void DFS(string nodeId, int depth, HashSet<string> pathSet)
+            {
+                if (pathSet.Contains(nodeId))
+                {
+                    // Found a back-edge
+                    return;
+                }
                 
-                // Simple vertical layout with some horizontal spread for branches
-                int x = (int)(startX + (i % 3) * horizontalSpacing);
-                int y = (int)(startY + (i / 3) * verticalSpacing);
+                pathSet.Add(nodeId);
+                
+                if (outgoing.ContainsKey(nodeId))
+                {
+                    foreach (var nextId in outgoing[nodeId])
+                    {
+                        if (pathSet.Contains(nextId) || (levels.ContainsKey(nextId) && levels[nextId] <= depth))
+                        {
+                            // This is a back-edge
+                            backEdges.Add((nodeId, nextId));
+                        }
+                        else
+                        {
+                            DFS(nextId, depth + 1, pathSet);
+                        }
+                    }
+                }
+                
+                pathSet.Remove(nodeId);
+            }
+            
+            if (entryLoc != null)
+            {
+                // Do DFS to find back-edges
+                DFS(entryLoc.Id, 0, new HashSet<string>());
+                
+                // Now do BFS ignoring back-edges
+                var queue = new Queue<(string id, int level)>();
+                queue.Enqueue((entryLoc.Id, 0));
+                levels[entryLoc.Id] = 0;
+                visited.Add(entryLoc.Id);
+                
+                while (queue.Count > 0)
+                {
+                    var (currentId, currentLevel) = queue.Dequeue();
+                    
+                    if (outgoing.ContainsKey(currentId))
+                    {
+                        foreach (var nextId in outgoing[currentId])
+                        {
+                            // Skip back-edges
+                            if (backEdges.Contains((currentId, nextId)))
+                                continue;
+                                
+                            if (!levels.ContainsKey(nextId))
+                            {
+                                levels[nextId] = currentLevel + 1;
+                                visited.Add(nextId);
+                                queue.Enqueue((nextId, currentLevel + 1));
+                            }
+                            else
+                            {
+                                // Update to max level
+                                levels[nextId] = Math.Max(levels[nextId], currentLevel + 1);
+                            }
+                        }
+                    }
+                }
+                
+                // Assign level to any unreached nodes (shouldn't happen in well-formed CFG)
+                foreach (var loc in locations)
+                {
+                    if (!levels.ContainsKey(loc.Id))
+                    {
+                        levels[loc.Id] = 0;
+                    }
+                }
+            }
+            
+            // Assign horizontal positions for nodes at the same level (for branching)
+            var levelNodes = new Dictionary<int, List<string>>();
+            foreach (var loc in locations)
+            {
+                int level = levels.ContainsKey(loc.Id) ? levels[loc.Id] : 0;
+                if (!levelNodes.ContainsKey(level))
+                    levelNodes[level] = new List<string>();
+                levelNodes[level].Add(loc.Id);
+            }
+            
+            // Calculate final positions
+            var positionMap = new Dictionary<string, (int x, int y)>();
+            
+            foreach (var loc in locations)
+            {
+                int level = levels.ContainsKey(loc.Id) ? levels[loc.Id] : 0;
+                int y = (int)(startY + level * verticalSpacing);
+                
+                var nodesAtLevel = levelNodes[level];
+                int indexAtLevel = nodesAtLevel.IndexOf(loc.Id);
+                int totalAtLevel = nodesAtLevel.Count;
+                
+                int x;
+                if (totalAtLevel == 1)
+                {
+                    // Single node at this level - center it
+                    x = (int)startX;
+                }
+                else if (totalAtLevel == 2)
+                {
+                    // Two nodes - place left and right
+                    x = (int)(startX + (indexAtLevel == 0 ? -horizontalSpacing/2 : horizontalSpacing/2));
+                }
+                else
+                {
+                    // Multiple nodes - spread them out
+                    double totalWidth = (totalAtLevel - 1) * horizontalSpacing / 1.5;
+                    x = (int)(startX - totalWidth/2 + indexAtLevel * (horizontalSpacing / 1.5));
+                }
+                
+                positionMap[loc.Id] = (x, y);
+            }
+
+            // Generate location elements
+            foreach (var location in locations)
+            {
+                if (!positionMap.ContainsKey(location.Id))
+                {
+                    positionMap[location.Id] = (0, 0);
+                }
+                
+                var (x, y) = positionMap[location.Id];
 
                 var locationElement = new XElement("location",
                     new XAttribute("id", location.Id),
                     new XAttribute("x", x),
                     new XAttribute("y", y),
                     new XElement("name",
-                        new XAttribute("x", x - 30),
-                        new XAttribute("y", y - 30),
+                        new XAttribute("x", x - 45),
+                        new XAttribute("y", y - 35),
                         location.Name
                     )
                 );
@@ -267,14 +415,16 @@ bool systemActive = true;
                 {
                     locationElement.Add(new XElement("label",
                         new XAttribute("kind", label.Key),
-                        new XAttribute("x", x - 40),
-                        new XAttribute("y", y + 20),
+                        new XAttribute("x", x + 50),
+                        new XAttribute("y", y + 10),
                         label.Value
                     ));
                 }
 
-                yield return locationElement;
+                locationElements.Add(locationElement);
             }
+            
+            return (locationElements, positionMap, levels);
         }
 
         private XElement GenerateInitialLocation(List<UppaalLocation> locations)
@@ -294,7 +444,9 @@ bool systemActive = true;
             );
         }
 
-        private IEnumerable<XElement> GenerateTransitions(List<UppaalTransition> transitions)
+        private IEnumerable<XElement> GenerateTransitions(List<UppaalTransition> transitions, 
+            Dictionary<string, (int x, int y)> positionMap, 
+            Dictionary<string, int> levels)
         {
             int transitionId = 0;
             
@@ -306,10 +458,23 @@ bool systemActive = true;
                     new XElement("target", new XAttribute("ref", transition.Target))
                 );
 
-                // Calculate offset for label positioning based on transition direction
-                int labelOffsetX = 10;
-                int labelOffsetY = -20;
+                // Position labels to the side of edges
+                int labelOffsetX = 20;
+                int labelOffsetY = -15;
 
+                // Add select if present (for parametric models)
+                if (!string.IsNullOrEmpty(transition.Select))
+                {
+                    transitionElement.Add(new XElement("label",
+                        new XAttribute("kind", "select"),
+                        new XAttribute("x", labelOffsetX),
+                        new XAttribute("y", labelOffsetY),
+                        transition.Select
+                    ));
+                    labelOffsetY += 16;
+                }
+
+                // Add guard if present
                 if (!string.IsNullOrEmpty(transition.Guard))
                 {
                     transitionElement.Add(new XElement("label",
@@ -318,20 +483,10 @@ bool systemActive = true;
                         new XAttribute("y", labelOffsetY),
                         transition.Guard
                     ));
-                    labelOffsetY += 20; // Stack labels vertically
+                    labelOffsetY += 16;
                 }
 
-                if (!string.IsNullOrEmpty(transition.Update))
-                {
-                    transitionElement.Add(new XElement("label",
-                        new XAttribute("kind", "assignment"),
-                        new XAttribute("x", labelOffsetX),
-                        new XAttribute("y", labelOffsetY),
-                        transition.Update
-                    ));
-                    labelOffsetY += 20;
-                }
-
+                // Add synchronisation if present
                 if (!string.IsNullOrEmpty(transition.Synchronization))
                 {
                     transitionElement.Add(new XElement("label",
@@ -340,17 +495,44 @@ bool systemActive = true;
                         new XAttribute("y", labelOffsetY),
                         transition.Synchronization
                     ));
-                    labelOffsetY += 20;
+                    labelOffsetY += 16;
                 }
 
-                if (transition.Comments.Any())
+                // Add assignment (update) if present
+                if (!string.IsNullOrEmpty(transition.Update))
                 {
                     transitionElement.Add(new XElement("label",
-                        new XAttribute("kind", "comments"),
+                        new XAttribute("kind", "assignment"),
                         new XAttribute("x", labelOffsetX),
                         new XAttribute("y", labelOffsetY),
-                        string.Join("\n", transition.Comments)
+                        transition.Update
                     ));
+                }
+
+                // Detect back-edges (loop-back edges) and add nail points to avoid overlap
+                if (positionMap.ContainsKey(transition.Source) && positionMap.ContainsKey(transition.Target))
+                {
+                    var sourcePos = positionMap[transition.Source];
+                    var targetPos = positionMap[transition.Target];
+                    int sourceLevel = levels.ContainsKey(transition.Source) ? levels[transition.Source] : 0;
+                    int targetLevel = levels.ContainsKey(transition.Target) ? levels[transition.Target] : 0;
+                    
+                    // If target is at same level or higher (back-edge/loop-back)
+                    if (targetLevel <= sourceLevel)
+                    {
+                        // Add nail points to curve the edge to the left
+                        int nailOffset = -150; // Go 150 pixels to the left
+                        
+                        // Add two nails to create a nice curve on the left side
+                        transitionElement.Add(new XElement("nail",
+                            new XAttribute("x", sourcePos.x + nailOffset),
+                            new XAttribute("y", sourcePos.y)
+                        ));
+                        transitionElement.Add(new XElement("nail",
+                            new XAttribute("x", targetPos.x + nailOffset),
+                            new XAttribute("y", targetPos.y)
+                        ));
+                    }
                 }
 
                 yield return transitionElement;

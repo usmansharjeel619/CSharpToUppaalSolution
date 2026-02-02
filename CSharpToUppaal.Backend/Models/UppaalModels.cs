@@ -134,9 +134,10 @@ namespace CSharpToUppaal.Backend.Models
     {
         public string Source { get; set; } = string.Empty;
         public string Target { get; set; } = string.Empty;
+        public string Select { get; set; } = string.Empty;
         public string Guard { get; set; } = string.Empty;
-        public string Update { get; set; } = string.Empty;
         public string Synchronization { get; set; } = string.Empty;
+        public string Update { get; set; } = string.Empty;
         public List<string> Comments { get; set; } = new();
     }
 

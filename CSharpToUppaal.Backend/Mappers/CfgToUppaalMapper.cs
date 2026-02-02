@@ -77,16 +77,11 @@ namespace CSharpToUppaal.Backend.Mappers
             var location = new UppaalLocation
             {
                 Id = $"loc_{node.Id.Replace("-", "_")}",
-                Name = GetLocationName(node),
+                Name = GetLocationName(node, node.Code),
                 IsUrgent = node.Type == NodeType.Return,
                 IsCommitted = false
             };
 
-            // Add labels for special nodes
-            if (node.Type == NodeType.Condition || node.Type == NodeType.Loop)
-            {
-                location.Labels["comment"] = $"/* {node.Code} */";
-            }
 
             return location;
         }
@@ -136,36 +131,76 @@ namespace CSharpToUppaal.Backend.Mappers
                 transition.Update = ExtractAssignment(fromNode.Code);
             }
 
-            // Add edge label as comment if it exists and is not true/false
-            if (!string.IsNullOrEmpty(edge.Label) && 
-                edge.Label.ToLower() != "true" && 
-                edge.Label.ToLower() != "false")
-            {
-                transition.Comments.Add($"// Branch: {edge.Label}");
-            }
-
-            // Add code as comment
-            if (!string.IsNullOrEmpty(fromNode?.Code))
-            {
-                transition.Comments.Add($"// C#: {fromNode.Code}");
-            }
+            // Don't add comments - we're removing them from edges
 
             return transition;
         }
 
-        private string GetLocationName(CfgNode node)
+        private string GetLocationName(CfgNode node, string code)
         {
-            return node.Type switch
+            // Create meaningful names from the node type and code
+            switch (node.Type)
             {
-                NodeType.Entry => "Entry",
-                NodeType.Exit => "Exit",
-                NodeType.Condition => "Condition",
-                NodeType.Loop => "Loop",
-                NodeType.Return => "Return",
-                NodeType.Declaration => "Declaration",
-                NodeType.Merge => "Merge",
-                _ => node.Label
-            };
+                case NodeType.Entry:
+                    return "Entry";
+                case NodeType.Exit:
+                    return "Exit";
+                case NodeType.Return:
+                    return string.IsNullOrEmpty(code) ? "Return" : ShortenCode(code);
+                case NodeType.Condition:
+                    return ShortenCode(code);
+                case NodeType.Loop:
+                    return ShortenCode(code);
+                case NodeType.Assignment:
+                    return ShortenCode(code);
+                case NodeType.Declaration:
+                    return ShortenCode(code);
+                case NodeType.Merge:
+                    return "Merge";
+                default:
+                    return string.IsNullOrEmpty(node.Label) ? node.Type.ToString() : node.Label;
+            }
+        }
+
+        private string ShortenCode(string code)
+        {
+            if (string.IsNullOrEmpty(code))
+                return "Node";
+
+            // Remove common prefixes and clean up
+            code = code.Trim();
+            
+            // Remove "for" keyword and just show parts
+            if (code.StartsWith("for (") || code.StartsWith("for("))
+            {
+                // For "for (init; cond; incr)", extract only the relevant part based on context
+                // If it's the whole for statement, just show the condition
+                int firstSemi = code.IndexOf(';');
+                int lastSemi = code.LastIndexOf(';');
+                if (firstSemi > 0 && lastSemi > firstSemi)
+                {
+                    // Extract condition part
+                    string condition = code.Substring(firstSemi + 1, lastSemi - firstSemi - 1).Trim();
+                    if (!string.IsNullOrEmpty(condition))
+                        code = condition;
+                }
+            }
+            
+            // For labels that start with "For ", remove it
+            if (code.StartsWith("For "))
+                code = code.Substring(4);
+                
+            // Remove statement prefixes
+            if (code.StartsWith("if (") || code.StartsWith("if("))
+                code = code.Substring(code.IndexOf('('));
+            if (code.StartsWith("while (") || code.StartsWith("while("))
+                code = code.Substring(code.IndexOf('('));
+
+            // Limit length
+            if (code.Length > 35)
+                code = code.Substring(0, 32) + "...";
+
+            return code;
         }
 
         private string ConvertConditionToUppaal(string csharpCondition, bool isFalseBranch)
