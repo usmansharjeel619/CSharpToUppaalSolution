@@ -99,12 +99,34 @@ namespace CSharpToUppaal.Backend.Mappers
                 Target = locationMap[edge.ToNodeId]
             };
 
-            // Add guard for conditions
+            // Add guard for conditions based on edge label
             if (fromNode?.Type == NodeType.Condition || fromNode?.Type == NodeType.Loop)
             {
-                if (fromNode.Properties.TryGetValue("condition", out var condition))
+                // Use the edge label directly if it's "true" or "false"
+                if (!string.IsNullOrEmpty(edge.Label))
                 {
-                    transition.Guard = ConvertConditionToUppaal(condition.ToString(), edge.Label == "false");
+                    // Get the condition from the node
+                    string condition = fromNode.Code;
+                    
+                    // Clean up the condition
+                    if (condition.StartsWith("if") || condition.StartsWith("while"))
+                    {
+                        // Extract condition from "if (condition)" or "while (condition)"
+                        int startParen = condition.IndexOf('(');
+                        int endParen = condition.LastIndexOf(')');
+                        if (startParen >= 0 && endParen > startParen)
+                        {
+                            condition = condition.Substring(startParen + 1, endParen - startParen - 1).Trim();
+                        }
+                    }
+                    
+                    // Convert to UPPAAL format and negate if false branch
+                    bool isFalseBranch = edge.Label.ToLower() == "false" || edge.Label.ToLower() == "else";
+                    transition.Guard = ConvertConditionToUppaal(condition, isFalseBranch);
+                }
+                else if (fromNode.Properties.TryGetValue("condition", out var condition))
+                {
+                    transition.Guard = ConvertConditionToUppaal(condition.ToString(), false);
                 }
             }
 
@@ -114,7 +136,15 @@ namespace CSharpToUppaal.Backend.Mappers
                 transition.Update = ExtractAssignment(fromNode.Code);
             }
 
-            // Add comments
+            // Add edge label as comment if it exists and is not true/false
+            if (!string.IsNullOrEmpty(edge.Label) && 
+                edge.Label.ToLower() != "true" && 
+                edge.Label.ToLower() != "false")
+            {
+                transition.Comments.Add($"// Branch: {edge.Label}");
+            }
+
+            // Add code as comment
             if (!string.IsNullOrEmpty(fromNode?.Code))
             {
                 transition.Comments.Add($"// C#: {fromNode.Code}");
@@ -162,7 +192,6 @@ namespace CSharpToUppaal.Backend.Mappers
 
         private string ExtractAssignment(string csharpCode)
         {
-            // Simple extraction - in reality use more sophisticated parsing
             if (csharpCode.Contains("=") && !csharpCode.Contains("=="))
             {
                 var parts = csharpCode.Split('=', 2);

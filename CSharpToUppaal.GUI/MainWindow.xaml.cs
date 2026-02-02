@@ -19,7 +19,7 @@ namespace CSharpToUppaal.GUI
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             _viewModel.SetCfgCanvas(CfgCanvas);
-            _viewModel.SetUppaalCanvas(UppaalCanvas);
+            //_viewModel.SetUppaalCanvas(UppaalCanvas);
         }
     }
 }

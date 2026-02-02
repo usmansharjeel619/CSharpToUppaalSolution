@@ -140,21 +140,95 @@ namespace Example
                 // Layout parameters
                 double nodeWidth = 120;
                 double nodeHeight = 60;
-                double horizontalSpacing = 150;
+                double horizontalSpacing = 200;
                 double verticalSpacing = 100;
-                double startX = 50;
+                double startX = 300; // Center starting position
                 double startY = 50;
 
-                // Calculate positions for nodes (simple vertical layout)
+                // Calculate positions for nodes with hierarchical layout
                 var nodePositions = new Dictionary<string, Point>();
-                int row = 0;
+                var processedNodes = new HashSet<string>();
+                var nodeLevels = new Dictionary<string, int>(); // Track vertical level of each node
+                
+                // Helper function to count outgoing edges from a node
+                int GetOutgoingEdgeCount(string nodeId)
+                {
+                    return cfg.Edges.Count(e => e.FromNodeId == nodeId);
+                }
+                
+                // Helper function to get children of a node
+                List<string> GetChildren(string nodeId)
+                {
+                    return cfg.Edges.Where(e => e.FromNodeId == nodeId)
+                                   .Select(e => e.ToNodeId)
+                                   .ToList();
+                }
+                
+                // Recursive function to layout nodes
+                void LayoutNode(string nodeId, int level, double xOffset)
+                {
+                    if (processedNodes.Contains(nodeId))
+                        return;
+                        
+                    processedNodes.Add(nodeId);
+                    nodeLevels[nodeId] = level;
+                    
+                    var children = GetChildren(nodeId);
+                    var outgoingCount = children.Count;
+                    
+                    // Position current node
+                    nodePositions[nodeId] = new Point(startX + xOffset, startY + level * verticalSpacing);
+                    
+                    if (outgoingCount == 0)
+                    {
+                        // Leaf node, no children
+                        return;
+                    }
+                    else if (outgoingCount == 1)
+                    {
+                        // Single child - continue straight down
+                        LayoutNode(children[0], level + 1, xOffset);
+                    }
+                    else if (outgoingCount == 2)
+                    {
+                        // Branch (typically if/else) - spread children horizontally
+                        var node = cfg.Nodes.FirstOrDefault(n => n.Id == nodeId);
+                        
+                        // Left branch (typically "false" or "else")
+                        LayoutNode(children[0], level + 1, xOffset - horizontalSpacing);
+                        
+                        // Right branch (typically "true" or "then")
+                        LayoutNode(children[1], level + 1, xOffset + horizontalSpacing);
+                    }
+                    else
+                    {
+                        // Multiple branches - spread them out horizontally
+                        double totalWidth = (outgoingCount - 1) * horizontalSpacing;
+                        double leftMost = xOffset - totalWidth / 2;
+                        
+                        for (int i = 0; i < outgoingCount; i++)
+                        {
+                            LayoutNode(children[i], level + 1, leftMost + i * horizontalSpacing);
+                        }
+                    }
+                }
+                
+                // Start layout from entry node
+                if (!string.IsNullOrEmpty(cfg.EntryNodeId))
+                {
+                    LayoutNode(cfg.EntryNodeId, 0, 0);
+                }
+                
+                // Handle any unprocessed nodes (in case of disconnected components)
                 foreach (var node in cfg.Nodes)
                 {
-                    nodePositions[node.Id] = new Point(
-                        startX + (row % 3) * horizontalSpacing,
-                        startY + (row / 3) * verticalSpacing
-                    );
-                    row++;
+                    if (!processedNodes.Contains(node.Id))
+                    {
+                        nodePositions[node.Id] = new Point(
+                            startX + processedNodes.Count * horizontalSpacing / 2,
+                            startY + processedNodes.Count * verticalSpacing
+                        );
+                    }
                 }
 
                 // Draw edges first (so they appear behind nodes)
@@ -166,35 +240,51 @@ namespace Example
                         var fromPos = nodePositions[edge.FromNodeId];
                         var toPos = nodePositions[edge.ToNodeId];
 
+                        // Calculate center points
+                        double fromCenterX = fromPos.X + nodeWidth / 2;
+                        double fromCenterY = fromPos.Y + nodeHeight / 2;
+                        double toCenterX = toPos.X + nodeWidth / 2;
+                        double toCenterY = toPos.Y + nodeHeight / 2;
+
+                        // Calculate angle between nodes
+                        var angle = Math.Atan2(toCenterY - fromCenterY, toCenterX - fromCenterX);
+                        
+                        // Calculate the edge of the target node (adjust arrow to stop at node boundary)
+                        double arrowMargin = 30; // Distance from center to edge of node
+                        double arrowTipX = toCenterX - arrowMargin * Math.Cos(angle);
+                        double arrowTipY = toCenterY - arrowMargin * Math.Sin(angle);
+
+                        // Draw line from source to target (stopping before the node)
                         var line = new Line
                         {
-                            X1 = fromPos.X + nodeWidth / 2,
-                            Y1 = fromPos.Y + nodeHeight / 2,
-                            X2 = toPos.X + nodeWidth / 2,
-                            Y2 = toPos.Y + nodeHeight / 2,
+                            X1 = fromCenterX,
+                            Y1 = fromCenterY,
+                            X2 = arrowTipX,
+                            Y2 = arrowTipY,
                             Stroke = Brushes.Black,
                             StrokeThickness = 2
                         };
 
                         _cfgCanvas.Children.Add(line);
 
-                        // Add arrow head
-                        var angle = Math.Atan2(toPos.Y - fromPos.Y, toPos.X - fromPos.X);
-                        var arrowSize = 10;
+                        // Add arrow head (more visible)
+                        var arrowSize = 12;
 
                         var arrow = new Polygon
                         {
                             Fill = Brushes.Black,
+                            Stroke = Brushes.Black,
+                            StrokeThickness = 1,
                             Points = new PointCollection
                             {
-                                new Point(toPos.X + nodeWidth / 2, toPos.Y + nodeHeight / 2),
+                                new Point(arrowTipX, arrowTipY),
                                 new Point(
-                                    toPos.X + nodeWidth / 2 - arrowSize * Math.Cos(angle - Math.PI / 6),
-                                    toPos.Y + nodeHeight / 2 - arrowSize * Math.Sin(angle - Math.PI / 6)
+                                    arrowTipX - arrowSize * Math.Cos(angle - Math.PI / 6),
+                                    arrowTipY - arrowSize * Math.Sin(angle - Math.PI / 6)
                                 ),
                                 new Point(
-                                    toPos.X + nodeWidth / 2 - arrowSize * Math.Cos(angle + Math.PI / 6),
-                                    toPos.Y + nodeHeight / 2 - arrowSize * Math.Sin(angle + Math.PI / 6)
+                                    arrowTipX - arrowSize * Math.Cos(angle + Math.PI / 6),
+                                    arrowTipY - arrowSize * Math.Sin(angle + Math.PI / 6)
                                 )
                             }
                         };

@@ -229,26 +229,30 @@ bool systemActive = true;
 
         private IEnumerable<XElement> GenerateLocations(List<UppaalLocation> locations, int templateIndex)
         {
+            // Use a hierarchical top-to-bottom layout similar to CFG visualization
             int locationCount = locations.Count;
-            double radius = Math.Max(150, locationCount * 30);
-            double centerX = 0;
-            double centerY = 0;
-            double angleStep = (2 * Math.PI) / Math.Max(locationCount, 1);
+            double nodeWidth = 120;
+            double nodeHeight = 60;
+            double horizontalSpacing = 200;
+            double verticalSpacing = 120;
+            double startX = 0;
+            double startY = 0;
 
             for (int i = 0; i < locations.Count; i++)
             {
                 var location = locations[i];
-                double angle = i * angleStep - Math.PI / 2;
-                int x = (int)(centerX + radius * Math.Cos(angle));
-                int y = (int)(centerY + radius * Math.Sin(angle));
+                
+                // Simple vertical layout with some horizontal spread for branches
+                int x = (int)(startX + (i % 3) * horizontalSpacing);
+                int y = (int)(startY + (i / 3) * verticalSpacing);
 
                 var locationElement = new XElement("location",
                     new XAttribute("id", location.Id),
                     new XAttribute("x", x),
                     new XAttribute("y", y),
                     new XElement("name",
-                        new XAttribute("x", x),
-                        new XAttribute("y", y - 16),
+                        new XAttribute("x", x - 30),
+                        new XAttribute("y", y - 30),
                         location.Name
                     )
                 );
@@ -263,8 +267,8 @@ bool systemActive = true;
                 {
                     locationElement.Add(new XElement("label",
                         new XAttribute("kind", label.Key),
-                        new XAttribute("x", x),
-                        new XAttribute("y", y + 16),
+                        new XAttribute("x", x - 40),
+                        new XAttribute("y", y + 20),
                         label.Value
                     ));
                 }
@@ -302,42 +306,49 @@ bool systemActive = true;
                     new XElement("target", new XAttribute("ref", transition.Target))
                 );
 
+                // Calculate offset for label positioning based on transition direction
+                int labelOffsetX = 10;
+                int labelOffsetY = -20;
+
                 if (!string.IsNullOrEmpty(transition.Guard))
                 {
                     transitionElement.Add(new XElement("label",
                         new XAttribute("kind", "guard"),
-                        new XAttribute("x", 0),
-                        new XAttribute("y", 0),
+                        new XAttribute("x", labelOffsetX),
+                        new XAttribute("y", labelOffsetY),
                         transition.Guard
                     ));
+                    labelOffsetY += 20; // Stack labels vertically
                 }
 
                 if (!string.IsNullOrEmpty(transition.Update))
                 {
                     transitionElement.Add(new XElement("label",
                         new XAttribute("kind", "assignment"),
-                        new XAttribute("x", 0),
-                        new XAttribute("y", 0),
+                        new XAttribute("x", labelOffsetX),
+                        new XAttribute("y", labelOffsetY),
                         transition.Update
                     ));
+                    labelOffsetY += 20;
                 }
 
                 if (!string.IsNullOrEmpty(transition.Synchronization))
                 {
                     transitionElement.Add(new XElement("label",
                         new XAttribute("kind", "synchronisation"),
-                        new XAttribute("x", 0),
-                        new XAttribute("y", 0),
+                        new XAttribute("x", labelOffsetX),
+                        new XAttribute("y", labelOffsetY),
                         transition.Synchronization
                     ));
+                    labelOffsetY += 20;
                 }
 
                 if (transition.Comments.Any())
                 {
                     transitionElement.Add(new XElement("label",
                         new XAttribute("kind", "comments"),
-                        new XAttribute("x", 0),
-                        new XAttribute("y", 0),
+                        new XAttribute("x", labelOffsetX),
+                        new XAttribute("y", labelOffsetY),
                         string.Join("\n", transition.Comments)
                     ));
                 }

@@ -234,7 +234,8 @@
                                    Foreground="Black"
                                    Padding="10"/>
                         </TabItem>
-                        <!-- Visual Preview -->
+                        <!-- Visual Preview - Temporarily Hidden -->
+                        <!--
                         <TabItem Header="Visual Preview">
                             <ScrollViewer Background="White" 
                                         HorizontalScrollBarVisibility="Auto" 
@@ -249,6 +250,7 @@
                                 </Border>
                             </ScrollViewer>
                         </TabItem>
+                        -->
                     </TabControl>
                 </Grid>
             </TabItem>
