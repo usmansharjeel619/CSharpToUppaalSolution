@@ -1,0 +1,154 @@
+<!DOCTYPE nta PUBLIC "-//Uppaal Team//DTD Flat System 1.1//EN" "http://www.it.uu.se/research/group/darts/uppaal/flat-1_1.dtd">
+<nta>
+  <declaration>
+// Global declarations generated from C# code
+chan request, response;
+clock globalClock;
+
+// Global variables
+int globalCounter = 0;
+bool systemActive = true;
+</declaration>
+  <template>
+    <name>Add</name>
+    <declaration>// Function: Add
+// Return type: int
+
+int a;
+int b;
+clock t_Add;
+</declaration>
+    <location id="id0" x="0" y="-200">
+      <name x="-45" y="-235">Entry</name>
+    </location>
+    <location id="id1" x="0" y="-100">
+      <name x="-45" y="-135">a__0__b__0</name>
+    </location>
+    <location id="id2" x="-100" y="0">
+      <name x="-145" y="-35">return_a__b</name>
+      <urgent />
+    </location>
+    <location id="id3" x="100" y="0">
+      <name x="55" y="-35">return_0</name>
+      <urgent />
+    </location>
+    <location id="id4" x="0" y="100">
+      <name x="-45" y="65">Merge</name>
+    </location>
+    <location id="id5" x="0" y="200">
+      <name x="-45" y="165">Exit</name>
+    </location>
+    <init ref="id0" />
+    <transition>
+      <source ref="id0" />
+      <target ref="id1" />
+    </transition>
+    <transition>
+      <source ref="id1" />
+      <target ref="id2" />
+      <label kind="guard" x="20" y="-15">a &gt; 0 &amp;&amp; b &gt; 0</label>
+    </transition>
+    <transition>
+      <source ref="id1" />
+      <target ref="id3" />
+      <label kind="guard" x="20" y="-15">a &gt; 0 &amp;&amp; b &gt; 0</label>
+    </transition>
+    <transition>
+      <source ref="id2" />
+      <target ref="id4" />
+    </transition>
+    <transition>
+      <source ref="id3" />
+      <target ref="id4" />
+    </transition>
+    <transition>
+      <source ref="id4" />
+      <target ref="id5" />
+    </transition>
+  </template>
+  <template>
+    <name>Factorial</name>
+    <declaration>// Function: Factorial
+// Return type: int
+
+int n;
+clock t_Factorial;
+</declaration>
+    <location id="id6" x="0" y="-200">
+      <name x="-45" y="-235">Entry</name>
+    </location>
+    <location id="id7" x="0" y="-100">
+      <name x="-45" y="-135">int_result__1</name>
+    </location>
+    <location id="id8" x="0" y="0">
+      <name x="-45" y="-35">int_i__2</name>
+    </location>
+    <location id="id9" x="0" y="100">
+      <name x="-45" y="65">i__n</name>
+    </location>
+    <location id="id10" x="-100" y="200">
+      <name x="-145" y="165">Expression</name>
+    </location>
+    <location id="id11" x="-100" y="300">
+      <name x="-145" y="265">For_Increment</name>
+    </location>
+    <location id="id12" x="100" y="200">
+      <name x="55" y="165">For_Exit</name>
+    </location>
+    <location id="id13" x="100" y="300">
+      <name x="55" y="265">return_result</name>
+      <urgent />
+    </location>
+    <location id="id14" x="0" y="400">
+      <name x="-45" y="365">Exit</name>
+    </location>
+    <init ref="id6" />
+    <transition>
+      <source ref="id6" />
+      <target ref="id7" />
+    </transition>
+    <transition>
+      <source ref="id7" />
+      <target ref="id8" />
+    </transition>
+    <transition>
+      <source ref="id8" />
+      <target ref="id9" />
+    </transition>
+    <transition>
+      <source ref="id9" />
+      <target ref="id10" />
+      <label kind="guard" x="20" y="-15">i &lt;= n</label>
+    </transition>
+    <transition>
+      <source ref="id10" />
+      <target ref="id11" />
+    </transition>
+    <transition>
+      <source ref="id11" />
+      <target ref="id9" />
+      <nail x="-250" y="300" />
+      <nail x="-150" y="100" />
+    </transition>
+    <transition>
+      <source ref="id9" />
+      <target ref="id12" />
+      <label kind="guard" x="20" y="-15">i &lt;= n</label>
+    </transition>
+    <transition>
+      <source ref="id12" />
+      <target ref="id13" />
+    </transition>
+    <transition>
+      <source ref="id13" />
+      <target ref="id14" />
+    </transition>
+  </template>
+  <system>system Add, Factorial;</system>
+  <queries>
+    <query>
+      <formula>A[] not deadlock</formula>
+      <comment>Verify that the system is deadlock-free</comment>
+    </query>
+  </queries>
+</nta>

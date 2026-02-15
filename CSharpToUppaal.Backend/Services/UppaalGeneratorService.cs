@@ -162,8 +162,8 @@ namespace CSharpToUppaal.Backend.Services
                 var xdoc = new XDocument(
                     new XDeclaration("1.0", "utf-8", null),
                     new XDocumentType("nta",
-                        "-//Uppaal Team//DTD Flat System 1.6//EN",
-                        "http://www.it.uu.se/research/group/darts/uppaal/flat-1_6.dtd",
+                        "-//Uppaal Team//DTD Flat System 1.1//EN",
+                        "http://www.it.uu.se/research/group/darts/uppaal/flat-1_1.dtd",
                         null),
                     ntaElement
                 );
@@ -188,12 +188,11 @@ namespace CSharpToUppaal.Backend.Services
             return new XElement("declaration",
                 new XText(@"
 // Global declarations generated from C# code
-typedef int[0,100] id_t;
-broadcast chan request, response;
+chan request, response;
 clock globalClock;
 
 // Global variables
-int[0,10] globalCounter = 0;
+int globalCounter = 0;
 bool systemActive = true;
 ")
             );
@@ -202,9 +201,27 @@ bool systemActive = true;
         private IEnumerable<XElement> GenerateTemplates(List<UppaalTemplate> templates)
         {
             int templateIndex = 0;
+            int globalIdCounter = 0; // Shared counter across all templates for unique id values
             
             foreach (var template in templates)
             {
+                // Remap location IDs to UPPAAL 4.1 compatible format (id0, id1, id2, ...)
+                var idRemap = new Dictionary<string, string>();
+                foreach (var loc in template.Locations)
+                {
+                    var newId = $"id{globalIdCounter++}";
+                    idRemap[loc.Id] = newId;
+                    loc.Id = newId;
+                }
+                // Remap transition source/target references
+                foreach (var trans in template.Transitions)
+                {
+                    if (idRemap.ContainsKey(trans.Source))
+                        trans.Source = idRemap[trans.Source];
+                    if (idRemap.ContainsKey(trans.Target))
+                        trans.Target = idRemap[trans.Target];
+                }
+
                 // Store position info for transition generation
                 var (locationElements, positionMap, levels) = GenerateLocationsWithPositions(template.Locations, template.Transitions, templateIndex);
                 
@@ -411,14 +428,19 @@ bool systemActive = true;
                 if (location.IsCommitted)
                     locationElement.Add(new XElement("committed"));
 
+                // Note: UPPAAL 4.1 does not support label kind="comment" on locations
+                // Only invariant labels are supported on locations in 4.1
                 foreach (var label in location.Labels)
                 {
-                    locationElement.Add(new XElement("label",
-                        new XAttribute("kind", label.Key),
-                        new XAttribute("x", x + 50),
-                        new XAttribute("y", y + 10),
-                        label.Value
-                    ));
+                    if (label.Key == "invariant")
+                    {
+                        locationElement.Add(new XElement("label",
+                            new XAttribute("kind", label.Key),
+                            new XAttribute("x", x + 50),
+                            new XAttribute("y", y + 10),
+                            label.Value
+                        ));
+                    }
                 }
 
                 locationElements.Add(locationElement);
@@ -448,12 +470,10 @@ bool systemActive = true;
             Dictionary<string, (int x, int y)> positionMap, 
             Dictionary<string, int> levels)
         {
-            int transitionId = 0;
-            
             foreach (var transition in transitions)
             {
+                // UPPAAL 4.1 does not support 'id' attribute on transitions
                 var transitionElement = new XElement("transition",
-                    new XAttribute("id", $"id{transitionId}"),
                     new XElement("source", new XAttribute("ref", transition.Source)),
                     new XElement("target", new XAttribute("ref", transition.Target))
                 );
@@ -536,7 +556,6 @@ bool systemActive = true;
                 }
 
                 yield return transitionElement;
-                transitionId++;
             }
         }
 

@@ -24,9 +24,22 @@ namespace CSharpToUppaal.Backend.Mappers
 
             // Map CFG nodes to UPPAAL locations
             var locationMap = new Dictionary<string, string>();
+            var usedNames = new Dictionary<string, int>();
             foreach (var node in cfg.Nodes)
             {
                 var location = MapNodeToLocation(node);
+
+                // Ensure unique location names (UPPAAL 4.1 requires unique names per template)
+                if (usedNames.ContainsKey(location.Name))
+                {
+                    usedNames[location.Name]++;
+                    location.Name = $"{location.Name}_{usedNames[location.Name]}";
+                }
+                else
+                {
+                    usedNames[location.Name] = 0;
+                }
+
                 template.Locations.Add(location);
                 locationMap[node.Id] = location.Id;
             }
@@ -138,28 +151,69 @@ namespace CSharpToUppaal.Backend.Mappers
 
         private string GetLocationName(CfgNode node, string code)
         {
+            string name;
             // Create meaningful names from the node type and code
             switch (node.Type)
             {
                 case NodeType.Entry:
-                    return "Entry";
+                    name = "Entry";
+                    break;
                 case NodeType.Exit:
-                    return "Exit";
+                    name = "Exit";
+                    break;
                 case NodeType.Return:
-                    return string.IsNullOrEmpty(code) ? "Return" : ShortenCode(code);
+                    name = string.IsNullOrEmpty(code) ? "Return" : ShortenCode(code);
+                    break;
                 case NodeType.Condition:
-                    return ShortenCode(code);
+                    name = ShortenCode(code);
+                    break;
                 case NodeType.Loop:
-                    return ShortenCode(code);
+                    name = ShortenCode(code);
+                    break;
                 case NodeType.Assignment:
-                    return ShortenCode(code);
+                    name = ShortenCode(code);
+                    break;
                 case NodeType.Declaration:
-                    return ShortenCode(code);
+                    name = ShortenCode(code);
+                    break;
                 case NodeType.Merge:
-                    return "Merge";
+                    name = "Merge";
+                    break;
                 default:
-                    return string.IsNullOrEmpty(node.Label) ? node.Type.ToString() : node.Label;
+                    name = string.IsNullOrEmpty(node.Label) ? node.Type.ToString() : node.Label;
+                    break;
             }
+
+            // Sanitize name for UPPAAL 4.1 compatibility:
+            // Location names must be valid identifiers (alphanumeric + underscore, no spaces or special chars)
+            return SanitizeLocationName(name);
+        }
+
+        private string SanitizeLocationName(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return "Node";
+
+            // Replace spaces and hyphens with underscores
+            var sanitized = name.Replace(' ', '_').Replace('-', '_');
+
+            // Remove any characters that are not alphanumeric or underscore
+            sanitized = new string(sanitized.Where(c => char.IsLetterOrDigit(c) || c == '_').ToArray());
+
+            // Ensure it starts with a letter or underscore
+            if (sanitized.Length > 0 && !char.IsLetter(sanitized[0]) && sanitized[0] != '_')
+            {
+                sanitized = "_" + sanitized;
+            }
+
+            if (string.IsNullOrEmpty(sanitized))
+                return "Node";
+
+            // Limit length
+            if (sanitized.Length > 30)
+                sanitized = sanitized.Substring(0, 30);
+
+            return sanitized;
         }
 
         private string ShortenCode(string code)
