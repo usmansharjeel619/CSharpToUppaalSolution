@@ -1,164 +1,265 @@
-<!DOCTYPE nta PUBLIC "-//Uppaal Team//DTD Flat System 1.6//EN" "http://www.it.uu.se/research/group/darts/uppaal/flat-1_6.dtd">
+<!DOCTYPE nta PUBLIC "-//Uppaal Team//DTD Flat System 1.1//EN" "http://www.it.uu.se/research/group/darts/uppaal/flat-1_1.dtd">
 <nta>
-  <declaration>
-// Global declarations generated from C# code
-typedef int[0,100] id_t;
-broadcast chan request, response;
-clock globalClock;
-
-// Global variables
-int[0,10] globalCounter = 0;
-bool systemActive = true;
+  <declaration>// Global declarations
 </declaration>
   <template>
-    <name>Add</name>
-    <declaration>// Function: Add
+    <name>GetBalance</name>
+    <declaration>// Function: GetBalance
 // Return type: int
 
-int a;
-int b;
-clock t_Add;
+int balance;
+int deposits;
+int withdrawals;
 </declaration>
-    <location id="loc_b6a5db2b_af8c_4c6e_950f_54392da76935" x="0" y="-180">
-      <name x="0" y="-196">Entry</name>
+    <location id="id0" x="0" y="-200">
+      <name x="-45" y="-235">Entry</name>
     </location>
-    <location id="loc_ea552b1d_e5c4_42a9_bf8e_66178f04834a" x="155" y="-90">
-      <name x="155" y="-106">Condition</name>
-      <label kind="comment" x="155" y="-74">/* a &gt; 0 &amp;&amp; b &gt; 0 */</label>
+    <location id="id1" x="0" y="-100">
+      <name x="-45" y="-135">int_balance__deposits___withdr</name>
     </location>
-    <location id="loc_79b2d8b1_46e6_4c9e_8584_b29a8fc007b2" x="155" y="89">
-      <name x="155" y="73">Return</name>
+    <location id="id2" x="0" y="0">
+      <name x="-45" y="-35">balance__0</name>
+    </location>
+    <location id="id3" x="0" y="100">
+      <name x="-45" y="65">Expression</name>
+    </location>
+    <location id="id4" x="0" y="200">
+      <name x="-45" y="165">Merge</name>
+    </location>
+    <location id="id5" x="0" y="300">
+      <name x="-45" y="265">return_balance</name>
       <urgent />
     </location>
-    <location id="loc_f8d3d388_b3b8_4e9b_a467_46b2176d2e31" x="0" y="180">
-      <name x="0" y="164">Return</name>
-      <urgent />
+    <location id="id6" x="0" y="400">
+      <name x="-45" y="365">Exit</name>
     </location>
-    <location id="loc_07ecac8a_7108_49ad_a0e1_afdf83585a78" x="-155" y="90">
-      <name x="-155" y="74">Merge</name>
-    </location>
-    <location id="loc_d8fb6a63_7d72_46ce_b486_0702a06e643c" x="-155" y="-89">
-      <name x="-155" y="-105">Exit</name>
-    </location>
-    <init ref="loc_b6a5db2b_af8c_4c6e_950f_54392da76935" />
-    <transition id="id0">
-      <source ref="loc_b6a5db2b_af8c_4c6e_950f_54392da76935" />
-      <target ref="loc_ea552b1d_e5c4_42a9_bf8e_66178f04834a" />
-      <label kind="comments" x="0" y="0">// C#: Start Add</label>
+    <init ref="id0" />
+    <transition>
+      <source ref="id0" />
+      <target ref="id1" />
     </transition>
-    <transition id="id1">
-      <source ref="loc_ea552b1d_e5c4_42a9_bf8e_66178f04834a" />
-      <target ref="loc_79b2d8b1_46e6_4c9e_8584_b29a8fc007b2" />
-      <label kind="guard" x="0" y="0">a &gt; 0 &amp;&amp; b &gt; 0</label>
-      <label kind="comments" x="0" y="0">// C#: a &gt; 0 &amp;&amp; b &gt; 0</label>
+    <transition>
+      <source ref="id1" />
+      <target ref="id2" />
+      <label kind="assignment" x="8" y="-65">balance = deposits - withdrawals</label>
     </transition>
-    <transition id="id2">
-      <source ref="loc_ea552b1d_e5c4_42a9_bf8e_66178f04834a" />
-      <target ref="loc_f8d3d388_b3b8_4e9b_a467_46b2176d2e31" />
-      <label kind="guard" x="0" y="0">a &gt; 0 &amp;&amp; b &gt; 0</label>
-      <label kind="comments" x="0" y="0">// C#: a &gt; 0 &amp;&amp; b &gt; 0</label>
+    <transition>
+      <source ref="id2" />
+      <target ref="id3" />
+      <label kind="guard" x="8" y="35">balance &lt; 0</label>
     </transition>
-    <transition id="id3">
-      <source ref="loc_79b2d8b1_46e6_4c9e_8584_b29a8fc007b2" />
-      <target ref="loc_07ecac8a_7108_49ad_a0e1_afdf83585a78" />
-      <label kind="comments" x="0" y="0">// C#: return a + b;</label>
+    <transition>
+      <source ref="id3" />
+      <target ref="id4" />
+      <label kind="assignment" x="8" y="135">balance = 0</label>
     </transition>
-    <transition id="id4">
-      <source ref="loc_f8d3d388_b3b8_4e9b_a467_46b2176d2e31" />
-      <target ref="loc_07ecac8a_7108_49ad_a0e1_afdf83585a78" />
-      <label kind="comments" x="0" y="0">// C#: return 0;</label>
+    <transition>
+      <source ref="id2" />
+      <target ref="id4" />
+      <label kind="guard" x="140" y="90">balance &gt;= 0</label>
+      <nail x="130" y="30" />
+      <nail x="130" y="170" />
     </transition>
-    <transition id="id5">
-      <source ref="loc_07ecac8a_7108_49ad_a0e1_afdf83585a78" />
-      <target ref="loc_d8fb6a63_7d72_46ce_b486_0702a06e643c" />
+    <transition>
+      <source ref="id4" />
+      <target ref="id5" />
+    </transition>
+    <transition>
+      <source ref="id5" />
+      <target ref="id6" />
     </transition>
   </template>
   <template>
-    <name>Factorial</name>
-    <declaration>// Function: Factorial
+    <name>ProcessTransaction</name>
+    <declaration>// Function: ProcessTransaction
 // Return type: int
 
-int n;
-clock t_Factorial;
+int result;
+int balance;
+int amount;
+int txType;
 </declaration>
-    <location id="loc_fc13d0ed_d40a_407c_ab0b_3459d4f87b82" x="0" y="-270">
-      <name x="0" y="-286">Entry</name>
+    <location id="id7" x="0" y="-200">
+      <name x="-45" y="-235">Entry</name>
     </location>
-    <location id="loc_860f39f3_fbd7_4177_be86_1a7cdad0a654" x="173" y="-206">
-      <name x="173" y="-222">Declaration</name>
+    <location id="id8" x="0" y="-100">
+      <name x="-45" y="-135">int_result__balance</name>
     </location>
-    <location id="loc_bf6d0b75_10e5_49c0_bbd2_8baede007bca" x="265" y="-46">
-      <name x="265" y="-62">Declaration</name>
+    <location id="id9" x="0" y="0">
+      <name x="-45" y="-35">txType__1</name>
     </location>
-    <location id="loc_a56e8538_7c54_4473_b5d3_ee8a5c195f42" x="233" y="134">
-      <name x="233" y="118">Loop</name>
-      <label kind="comment" x="233" y="150">/* i &lt;= n */</label>
+    <location id="id10" x="-85" y="100">
+      <name x="-130" y="65">Expression</name>
     </location>
-    <location id="loc_46644641_5d1a_4738_8cab_a31ee21c36b9" x="92" y="253">
-      <name x="92" y="237">Expression</name>
+    <location id="id11" x="85" y="100">
+      <name x="40" y="65">txType__2__balance__amount</name>
     </location>
-    <location id="loc_a726b8cf_9f37_49aa_8d0c_37f925f7f6c9" x="-92" y="253">
-      <name x="-92" y="237">For Increment</name>
+    <location id="id12" x="85" y="200">
+      <name x="40" y="165">Expression_1</name>
     </location>
-    <location id="loc_a088a2ed_5c79_473b_87f7_ab695e0ac6d1" x="-233" y="135">
-      <name x="-233" y="119">For Exit</name>
+    <location id="id13" x="85" y="300">
+      <name x="40" y="265">Merge</name>
     </location>
-    <location id="loc_546808ca_47b3_4efd_87f9_ab94f2128641" x="-265" y="-46">
-      <name x="-265" y="-62">Return</name>
+    <location id="id14" x="-85" y="400">
+      <name x="-130" y="365">Merge_1</name>
+    </location>
+    <location id="id15" x="-85" y="500">
+      <name x="-130" y="465">return_result</name>
       <urgent />
     </location>
-    <location id="loc_15935bd3_2226_46ce_b546_a0924a90c9da" x="-173" y="-206">
-      <name x="-173" y="-222">Exit</name>
+    <location id="id16" x="-85" y="600">
+      <name x="-130" y="565">Exit</name>
     </location>
-    <init ref="loc_fc13d0ed_d40a_407c_ab0b_3459d4f87b82" />
-    <transition id="id0">
-      <source ref="loc_fc13d0ed_d40a_407c_ab0b_3459d4f87b82" />
-      <target ref="loc_860f39f3_fbd7_4177_be86_1a7cdad0a654" />
-      <label kind="comments" x="0" y="0">// C#: Start Factorial</label>
+    <init ref="id7" />
+    <transition>
+      <source ref="id7" />
+      <target ref="id8" />
     </transition>
-    <transition id="id1">
-      <source ref="loc_860f39f3_fbd7_4177_be86_1a7cdad0a654" />
-      <target ref="loc_bf6d0b75_10e5_49c0_bbd2_8baede007bca" />
-      <label kind="comments" x="0" y="0">// C#: int result = 1;</label>
+    <transition>
+      <source ref="id8" />
+      <target ref="id9" />
+      <label kind="assignment" x="8" y="-65">result = balance</label>
     </transition>
-    <transition id="id2">
-      <source ref="loc_bf6d0b75_10e5_49c0_bbd2_8baede007bca" />
-      <target ref="loc_a56e8538_7c54_4473_b5d3_ee8a5c195f42" />
-      <label kind="comments" x="0" y="0">// C#: int i = 2</label>
+    <transition>
+      <source ref="id9" />
+      <target ref="id10" />
+      <label kind="guard" x="-57" y="35">txType == 1</label>
     </transition>
-    <transition id="id3">
-      <source ref="loc_a56e8538_7c54_4473_b5d3_ee8a5c195f42" />
-      <target ref="loc_46644641_5d1a_4738_8cab_a31ee21c36b9" />
-      <label kind="guard" x="0" y="0">i &lt;= n</label>
-      <label kind="comments" x="0" y="0">// C#: i &lt;= n</label>
+    <transition>
+      <source ref="id9" />
+      <target ref="id11" />
+      <label kind="guard" x="57" y="35">txType != 1</label>
     </transition>
-    <transition id="id4">
-      <source ref="loc_46644641_5d1a_4738_8cab_a31ee21c36b9" />
-      <target ref="loc_a726b8cf_9f37_49aa_8d0c_37f925f7f6c9" />
-      <label kind="comments" x="0" y="0">// C#: result *= i</label>
+    <transition>
+      <source ref="id11" />
+      <target ref="id12" />
+      <label kind="guard" x="93" y="135">txType == 2 &amp;&amp; balance &gt;= amount</label>
     </transition>
-    <transition id="id5">
-      <source ref="loc_a726b8cf_9f37_49aa_8d0c_37f925f7f6c9" />
-      <target ref="loc_a56e8538_7c54_4473_b5d3_ee8a5c195f42" />
-      <label kind="comments" x="0" y="0">// C#: i++</label>
+    <transition>
+      <source ref="id12" />
+      <target ref="id13" />
+      <label kind="assignment" x="93" y="235">result = balance - amount</label>
     </transition>
-    <transition id="id6">
-      <source ref="loc_a56e8538_7c54_4473_b5d3_ee8a5c195f42" />
-      <target ref="loc_a088a2ed_5c79_473b_87f7_ab695e0ac6d1" />
-      <label kind="guard" x="0" y="0">i &lt;= n</label>
-      <label kind="comments" x="0" y="0">// C#: i &lt;= n</label>
+    <transition>
+      <source ref="id11" />
+      <target ref="id13" />
+      <label kind="guard" x="225" y="190">not(txType == 2 &amp;&amp; balance &gt;= amount)</label>
+      <nail x="215" y="130" />
+      <nail x="215" y="270" />
     </transition>
-    <transition id="id7">
-      <source ref="loc_a088a2ed_5c79_473b_87f7_ab695e0ac6d1" />
-      <target ref="loc_546808ca_47b3_4efd_87f9_ab94f2128641" />
+    <transition>
+      <source ref="id10" />
+      <target ref="id14" />
+      <label kind="assignment" x="-77" y="235">result = balance + amount</label>
     </transition>
-    <transition id="id8">
-      <source ref="loc_546808ca_47b3_4efd_87f9_ab94f2128641" />
-      <target ref="loc_15935bd3_2226_46ce_b546_a0924a90c9da" />
-      <label kind="comments" x="0" y="0">// C#: return result;</label>
+    <transition>
+      <source ref="id13" />
+      <target ref="id14" />
+    </transition>
+    <transition>
+      <source ref="id14" />
+      <target ref="id15" />
+    </transition>
+    <transition>
+      <source ref="id15" />
+      <target ref="id16" />
     </transition>
   </template>
-  <system>system Add, Factorial;</system>
+  <template>
+    <name>CalculateInterest</name>
+    <declaration>// Function: CalculateInterest
+// Return type: int
+
+int amount;
+int i;
+int interest;
+int principal;
+int rate;
+int years;
+</declaration>
+    <location id="id17" x="0" y="-200">
+      <name x="-45" y="-235">Entry</name>
+    </location>
+    <location id="id18" x="0" y="-100">
+      <name x="-45" y="-135">int_amount__principal</name>
+    </location>
+    <location id="id19" x="0" y="0">
+      <name x="-45" y="-35">int_i__0</name>
+    </location>
+    <location id="id20" x="0" y="100">
+      <name x="-45" y="65">i__years</name>
+    </location>
+    <location id="id21" x="-85" y="200">
+      <name x="-130" y="165">int_interest__amount__rate__10</name>
+    </location>
+    <location id="id22" x="-85" y="300">
+      <name x="-130" y="265">Expression</name>
+    </location>
+    <location id="id23" x="-85" y="400">
+      <name x="-130" y="365">For_Increment</name>
+    </location>
+    <location id="id24" x="85" y="200">
+      <name x="40" y="165">For_Exit</name>
+    </location>
+    <location id="id25" x="85" y="300">
+      <name x="40" y="265">return_amount</name>
+      <urgent />
+    </location>
+    <location id="id26" x="85" y="400">
+      <name x="40" y="365">Exit</name>
+    </location>
+    <init ref="id17" />
+    <transition>
+      <source ref="id17" />
+      <target ref="id18" />
+    </transition>
+    <transition>
+      <source ref="id18" />
+      <target ref="id19" />
+      <label kind="assignment" x="8" y="-65">amount = principal</label>
+    </transition>
+    <transition>
+      <source ref="id19" />
+      <target ref="id20" />
+      <label kind="assignment" x="8" y="35">i = 0</label>
+    </transition>
+    <transition>
+      <source ref="id20" />
+      <target ref="id21" />
+      <label kind="guard" x="-57" y="135">i &lt; years</label>
+    </transition>
+    <transition>
+      <source ref="id21" />
+      <target ref="id22" />
+      <label kind="assignment" x="-77" y="235">interest = amount * rate / 100</label>
+    </transition>
+    <transition>
+      <source ref="id22" />
+      <target ref="id23" />
+      <label kind="assignment" x="-77" y="335">amount = amount + interest</label>
+    </transition>
+    <transition>
+      <source ref="id23" />
+      <target ref="id20" />
+      <label kind="assignment" x="-245" y="250">i = i + 1</label>
+      <nail x="-235" y="400" />
+      <nail x="-235" y="100" />
+    </transition>
+    <transition>
+      <source ref="id20" />
+      <target ref="id24" />
+      <label kind="guard" x="57" y="135">i &gt;= years</label>
+    </transition>
+    <transition>
+      <source ref="id24" />
+      <target ref="id25" />
+    </transition>
+    <transition>
+      <source ref="id25" />
+      <target ref="id26" />
+    </transition>
+  </template>
+  <system>system GetBalance, ProcessTransaction, CalculateInterest;</system>
   <queries>
     <query>
       <formula>A[] not deadlock</formula>

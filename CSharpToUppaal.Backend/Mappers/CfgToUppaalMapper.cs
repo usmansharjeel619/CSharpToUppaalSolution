@@ -73,16 +73,64 @@ namespace CSharpToUppaal.Backend.Mappers
             declarations.AppendLine($"// Return type: {cfg.ReturnType}");
             declarations.AppendLine();
 
-            // Declare variables
+            // Declare variables with UPPAAL-compatible types
             foreach (var variable in cfg.Variables)
             {
-                declarations.AppendLine($"{variable.Value} {variable.Key};");
+                string uppaalType = MapCSharpTypeToUppaal(variable.Value);
+                if (!string.IsNullOrEmpty(uppaalType))
+                {
+                    declarations.AppendLine($"{uppaalType} {SanitizeVariableName(variable.Key)};");
+                }
             }
 
-            // Add clock for timing
-            declarations.AppendLine($"clock t_{cfg.MethodName};");
-
             return declarations.ToString();
+        }
+
+        private string MapCSharpTypeToUppaal(string csharpType)
+        {
+            // Map C# types to UPPAAL types
+            switch (csharpType?.ToLower())
+            {
+                case "int":
+                case "int32":
+                case "int16":
+                case "int64":
+                case "short":
+                case "long":
+                case "byte":
+                case "sbyte":
+                case "uint":
+                case "ushort":
+                case "ulong":
+                    return "int";
+                case "bool":
+                case "boolean":
+                    return "bool";
+                case "double":
+                case "float":
+                case "decimal":
+                    // UPPAAL doesn't support floating point; use int as approximation
+                    return "int";
+                case "char":
+                    return "int"; // represent as int
+                case "string":
+                    // UPPAAL doesn't support strings; skip or use int
+                    return "int";
+                default:
+                    return "int"; // default to int for unknown types
+            }
+        }
+
+        private string SanitizeVariableName(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return "var";
+            var sanitized = new string(name.Where(c => char.IsLetterOrDigit(c) || c == '_').ToArray());
+            if (sanitized.Length > 0 && !char.IsLetter(sanitized[0]) && sanitized[0] != '_')
+                sanitized = "_" + sanitized;
+            if (string.IsNullOrEmpty(sanitized))
+                return "var";
+            return sanitized;
         }
 
         private UppaalLocation MapNodeToLocation(CfgNode node)
@@ -110,16 +158,14 @@ namespace CSharpToUppaal.Backend.Mappers
             // Add guard for conditions based on edge label
             if (fromNode?.Type == NodeType.Condition || fromNode?.Type == NodeType.Loop)
             {
-                // Use the edge label directly if it's "true" or "false"
                 if (!string.IsNullOrEmpty(edge.Label))
                 {
                     // Get the condition from the node
                     string condition = fromNode.Code;
                     
-                    // Clean up the condition
+                    // Clean up the condition - extract from if/while/for
                     if (condition.StartsWith("if") || condition.StartsWith("while"))
                     {
-                        // Extract condition from "if (condition)" or "while (condition)"
                         int startParen = condition.IndexOf('(');
                         int endParen = condition.LastIndexOf(')');
                         if (startParen >= 0 && endParen > startParen)
@@ -128,20 +174,20 @@ namespace CSharpToUppaal.Backend.Mappers
                         }
                     }
                     
-                    // Convert to UPPAAL format and negate if false branch
+                    // Determine if this is the false/negated branch
                     bool isFalseBranch = edge.Label.ToLower() == "false" || edge.Label.ToLower() == "else";
                     transition.Guard = ConvertConditionToUppaal(condition, isFalseBranch);
                 }
-                else if (fromNode.Properties.TryGetValue("condition", out var condition))
-                {
-                    transition.Guard = ConvertConditionToUppaal(condition.ToString(), false);
-                }
+                // Edges without a label from a condition node get no guard (unconditional, e.g., loop-back)
             }
 
-            // Add updates for assignments
-            if (fromNode?.Type == NodeType.Assignment && !string.IsNullOrEmpty(fromNode.Code))
+            // Add updates for assignments, declarations with initializers, and expression statements
+            if ((fromNode?.Type == NodeType.Assignment || fromNode?.Type == NodeType.Declaration || fromNode?.Type == NodeType.Statement) 
+                && !string.IsNullOrEmpty(fromNode.Code))
             {
-                transition.Update = ExtractAssignment(fromNode.Code);
+                var update = ExtractAssignment(fromNode.Code);
+                if (!string.IsNullOrEmpty(update))
+                    transition.Update = update;
             }
 
             // Don't add comments - we're removing them from edges
@@ -189,10 +235,24 @@ namespace CSharpToUppaal.Backend.Mappers
             return SanitizeLocationName(name);
         }
 
+        private static readonly HashSet<string> UppaalReservedWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // Official UPPAAL reserved keywords
+            "chan", "clock", "double", "bool", "int", "commit", "const", "urgent",
+            "broadcast", "init", "process", "state", "invariant", "location", "guard",
+            "sync", "assign", "system", "trans", "deadlock", "and", "or", "not", "imply",
+            "true", "false", "for", "forall", "exists", "while", "do", "if", "else",
+            "return", "typedef", "struct", "rate", "before_update", "after_update",
+            "meta", "priority", "progress", "scalar", "select", "void", "default",
+            "string", "minE", "maxE", "Pr",
+            // Reserved for future use
+            "switch", "case", "continue", "break", "enum"
+        };
+
         private string SanitizeLocationName(string name)
         {
             if (string.IsNullOrEmpty(name))
-                return "Node";
+                return "L_Node";
 
             // Replace spaces and hyphens with underscores
             var sanitized = name.Replace(' ', '_').Replace('-', '_');
@@ -207,11 +267,15 @@ namespace CSharpToUppaal.Backend.Mappers
             }
 
             if (string.IsNullOrEmpty(sanitized))
-                return "Node";
+                return "L_Node";
 
             // Limit length
             if (sanitized.Length > 30)
                 sanitized = sanitized.Substring(0, 30);
+
+            // Avoid UPPAAL reserved words as location names
+            if (UppaalReservedWords.Contains(sanitized))
+                sanitized = "L_" + sanitized;
 
             return sanitized;
         }
@@ -259,46 +323,116 @@ namespace CSharpToUppaal.Backend.Mappers
 
         private string ConvertConditionToUppaal(string csharpCondition, bool isFalseBranch)
         {
-            // Convert C# operators to UPPAAL operators
-            var uppaalCondition = csharpCondition
-                .Replace("==", "==")
-                .Replace("!=", "!=")
-                .Replace("<", "<")
-                .Replace(">", ">")
-                .Replace("<=", "<=")
-                .Replace(">=", ">=")
-                .Replace("&&", "&&")
-                .Replace("||", "||")
-                .Replace("!", "!");
+            // Clean up whitespace
+            var uppaalCondition = csharpCondition.Trim();
 
             if (isFalseBranch)
             {
-                return $"!({uppaalCondition})";
+                // Try to negate simple conditions directly for cleaner UPPAAL expressions
+                return NegateCondition(uppaalCondition);
             }
 
             return uppaalCondition;
         }
 
+        private string NegateCondition(string condition)
+        {
+            condition = condition.Trim();
+
+            // Simple comparison negation (no && or ||)
+            if (!condition.Contains("&&") && !condition.Contains("||"))
+            {
+                if (condition.Contains("<="))
+                    return condition.Replace("<=", ">");
+                if (condition.Contains(">="))
+                    return condition.Replace(">=", "<");
+                if (condition.Contains("!="))
+                    return condition.Replace("!=", "==");
+                if (condition.Contains("=="))
+                    return condition.Replace("==", "!=");
+                // Be careful with < and > — don't match <= or >=
+                if (condition.Contains("<") && !condition.Contains("<="))
+                    return condition.Replace("<", ">=");
+                if (condition.Contains(">") && !condition.Contains(">="))
+                    return condition.Replace(">", "<=");
+            }
+
+            // For complex expressions with && or ||, use not() wrapper
+            // UPPAAL supports 'not' keyword as well as '!'
+            return $"not({condition})";
+        }
+
         private string ExtractAssignment(string csharpCode)
         {
-            if (csharpCode.Contains("=") && !csharpCode.Contains("=="))
+            // Remove trailing semicolons and trim
+            csharpCode = csharpCode.Trim().TrimEnd(';').Trim();
+
+            // Handle postfix increment/decrement: "i++" → "i = i + 1", "i--" → "i = i - 1"
+            if (csharpCode.EndsWith("++"))
+            {
+                var varName = csharpCode.Substring(0, csharpCode.Length - 2).Trim();
+                return $"{varName} = {varName} + 1";
+            }
+            if (csharpCode.EndsWith("--"))
+            {
+                var varName = csharpCode.Substring(0, csharpCode.Length - 2).Trim();
+                return $"{varName} = {varName} - 1";
+            }
+
+            // Handle prefix increment/decrement: "++i" → "i = i + 1", "--i" → "i = i - 1"
+            if (csharpCode.StartsWith("++"))
+            {
+                var varName = csharpCode.Substring(2).Trim();
+                return $"{varName} = {varName} + 1";
+            }
+            if (csharpCode.StartsWith("--"))
+            {
+                var varName = csharpCode.Substring(2).Trim();
+                return $"{varName} = {varName} - 1";
+            }
+
+            // Handle compound assignments FIRST (before simple =) since += contains =
+            var compoundOps = new[] { "+=", "-=", "*=", "/=", "%=" };
+            foreach (var op in compoundOps)
+            {
+                int opIdx = csharpCode.IndexOf(op);
+                if (opIdx >= 0)
+                {
+                    var left = csharpCode.Substring(0, opIdx).Trim();
+                    var right = csharpCode.Substring(opIdx + op.Length).Trim();
+                    // Remove type if present
+                    var leftTokens = left.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (leftTokens.Length >= 2)
+                        left = leftTokens[leftTokens.Length - 1];
+                    
+                    string mathOp = op.Substring(0, 1);
+                    return $"{left} = {left} {mathOp} {right}";
+                }
+            }
+
+            // Handle simple assignments: "int balance = deposits - withdrawals" or "result = balance + amount"
+            // Exclude conditions that contain comparison operators
+            if (csharpCode.Contains("=") && !csharpCode.Contains("==") && !csharpCode.Contains("!=")
+                && !csharpCode.Contains("<=") && !csharpCode.Contains(">="))
             {
                 var parts = csharpCode.Split('=', 2);
                 if (parts.Length == 2)
                 {
                     var left = parts[0].Trim();
-                    var right = parts[1].Trim().TrimEnd(';');
+                    var right = parts[1].Trim();
 
-                    // Remove type declaration if present
-                    var lastSpaceIndex = left.LastIndexOf(' ');
-                    if (lastSpaceIndex > 0)
+                    // Remove type declaration if present (e.g., "int balance" → "balance")
+                    var leftTokens = left.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (leftTokens.Length >= 2)
                     {
-                        left = left.Substring(lastSpaceIndex + 1);
+                        // Last token is the variable name
+                        left = leftTokens[leftTokens.Length - 1];
                     }
 
                     return $"{left} = {right}";
                 }
             }
+
             return string.Empty;
         }
     }

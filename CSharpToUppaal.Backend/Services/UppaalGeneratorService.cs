@@ -159,8 +159,8 @@ namespace CSharpToUppaal.Backend.Services
                     GenerateQueries()
                 );
 
+                // UPPAAL 4.x expects no <?xml?> declaration — just DOCTYPE + nta
                 var xdoc = new XDocument(
-                    new XDeclaration("1.0", "utf-8", null),
                     new XDocumentType("nta",
                         "-//Uppaal Team//DTD Flat System 1.1//EN",
                         "http://www.it.uu.se/research/group/darts/uppaal/flat-1_1.dtd",
@@ -186,15 +186,7 @@ namespace CSharpToUppaal.Backend.Services
         private XElement GenerateGlobalDeclaration()
         {
             return new XElement("declaration",
-                new XText(@"
-// Global declarations generated from C# code
-chan request, response;
-clock globalClock;
-
-// Global variables
-int globalCounter = 0;
-bool systemActive = true;
-")
+                new XText("// Global declarations\n")
             );
         }
 
@@ -223,14 +215,14 @@ bool systemActive = true;
                 }
 
                 // Store position info for transition generation
-                var (locationElements, positionMap, levels) = GenerateLocationsWithPositions(template.Locations, template.Transitions, templateIndex);
+                var (locationElements, positionMap, levels, backEdges) = GenerateLocationsWithPositions(template.Locations, template.Transitions, templateIndex);
                 
                 yield return new XElement("template",
                     new XElement("name", template.Name),
                     GenerateTemplateDeclaration(template),
                     locationElements,
                     GenerateInitialLocation(template.Locations),
-                    GenerateTransitions(template.Transitions, positionMap, levels)
+                    GenerateTransitions(template.Transitions, positionMap, levels, backEdges)
                 );
                 
                 templateIndex++;
@@ -247,18 +239,16 @@ bool systemActive = true;
             );
         }
 
-        private (IEnumerable<XElement> elements, Dictionary<string, (int x, int y)> positions, Dictionary<string, int> levels) 
+        private (IEnumerable<XElement> elements, Dictionary<string, (int x, int y)> positions, Dictionary<string, int> levels, HashSet<(string, string)> backEdges) 
             GenerateLocationsWithPositions(List<UppaalLocation> locations, List<UppaalTransition> transitions, int templateIndex)
         {
             var locationElements = new List<XElement>();
             
-            // Reduced spacing for better compact layout
-            double horizontalSpacing = 200;
-            double verticalSpacing = 100;
-            double startX = 0;
-            double startY = -200;
+            int verticalSpacing = 100;
+            int horizontalSpacing = 170;
+            int startY = -200;
 
-            // Build adjacency graph to understand structure
+            // Build adjacency graph
             var outgoing = new Dictionary<string, List<string>>();
             var incoming = new Dictionary<string, List<string>>();
             
@@ -273,142 +263,217 @@ bool systemActive = true;
                 incoming[trans.Target].Add(trans.Source);
             }
             
-            // Assign levels using modified BFS that handles cycles properly
-            var levels = new Dictionary<string, int>();
-            var visited = new HashSet<string>();
             var entryLoc = locations.FirstOrDefault(l => l.Name == "Entry" || l.IsInitial);
             
-            // First pass: Identify back-edges (edges that go to already visited or same-level nodes)
+            // --- Step 1: Identify true back-edges via DFS on-path detection ---
             var backEdges = new HashSet<(string, string)>();
-            
-            void DFS(string nodeId, int depth, HashSet<string> pathSet)
             {
-                if (pathSet.Contains(nodeId))
+                var onPath = new HashSet<string>();
+                var dfsVisited = new HashSet<string>();
+                
+                void FindBackEdges(string nodeId)
                 {
-                    // Found a back-edge
-                    return;
+                    onPath.Add(nodeId);
+                    dfsVisited.Add(nodeId);
+                    
+                    if (outgoing.ContainsKey(nodeId))
+                    {
+                        foreach (var nextId in outgoing[nodeId])
+                        {
+                            if (onPath.Contains(nextId))
+                            {
+                                backEdges.Add((nodeId, nextId));
+                            }
+                            else if (!dfsVisited.Contains(nextId))
+                            {
+                                FindBackEdges(nextId);
+                            }
+                        }
+                    }
+                    
+                    onPath.Remove(nodeId);
                 }
                 
-                pathSet.Add(nodeId);
-                
-                if (outgoing.ContainsKey(nodeId))
+                if (entryLoc != null)
+                    FindBackEdges(entryLoc.Id);
+            }
+            
+            // --- Step 2: Assign levels (Y) via longest-path from entry, ignoring back-edges ---
+            var levels = new Dictionary<string, int>();
+            if (entryLoc != null)
+            {
+                // Topological sort on DAG (ignoring back-edges)
+                var inDegree = new Dictionary<string, int>();
+                foreach (var loc in locations)
+                    inDegree[loc.Id] = 0;
+                    
+                foreach (var trans in transitions)
                 {
-                    foreach (var nextId in outgoing[nodeId])
+                    if (!backEdges.Contains((trans.Source, trans.Target)))
                     {
-                        if (pathSet.Contains(nextId) || (levels.ContainsKey(nextId) && levels[nextId] <= depth))
+                        if (inDegree.ContainsKey(trans.Target))
+                            inDegree[trans.Target]++;
+                    }
+                }
+                
+                // Use longest-path algorithm for nicer layout
+                var dist = new Dictionary<string, int>();
+                foreach (var loc in locations)
+                    dist[loc.Id] = -1;
+                dist[entryLoc.Id] = 0;
+                
+                var queue = new Queue<string>();
+                queue.Enqueue(entryLoc.Id);
+                
+                // BFS in topological order, always taking max distance
+                var processed = new HashSet<string>();
+                int safetyCounter = 0;
+                int maxIterations = locations.Count * locations.Count + 100;
+                
+                while (queue.Count > 0 && safetyCounter++ < maxIterations)
+                {
+                    var current = queue.Dequeue();
+                    if (processed.Contains(current)) continue;
+                    
+                    // Check all predecessors (non-back-edge) have been processed
+                    bool ready = true;
+                    if (incoming.ContainsKey(current))
+                    {
+                        foreach (var pred in incoming[current])
                         {
-                            // This is a back-edge
-                            backEdges.Add((nodeId, nextId));
+                            if (!backEdges.Contains((pred, current)) && !processed.Contains(pred) && pred != current)
+                            {
+                                ready = false;
+                                break;
+                            }
                         }
-                        else
+                    }
+                    
+                    if (!ready && current != entryLoc.Id)
+                    {
+                        queue.Enqueue(current); // re-queue
+                        continue;
+                    }
+                    
+                    processed.Add(current);
+                    
+                    if (outgoing.ContainsKey(current))
+                    {
+                        foreach (var next in outgoing[current])
                         {
-                            DFS(nextId, depth + 1, pathSet);
+                            if (backEdges.Contains((current, next))) continue;
+                            int newDist = dist[current] + 1;
+                            if (!dist.ContainsKey(next) || newDist > dist[next])
+                                dist[next] = newDist;
+                            if (!processed.Contains(next))
+                                queue.Enqueue(next);
                         }
                     }
                 }
                 
-                pathSet.Remove(nodeId);
+                foreach (var loc in locations)
+                    levels[loc.Id] = dist.ContainsKey(loc.Id) && dist[loc.Id] >= 0 ? dist[loc.Id] : 0;
+            }
+            else
+            {
+                foreach (var loc in locations)
+                    levels[loc.Id] = 0;
+            }
+            
+            // --- Step 3: Assign X positions using DFS tree traversal to respect branch structure ---
+            // This prevents edge crossings by keeping subtrees together.
+            var positionMap = new Dictionary<string, (int x, int y)>();
+            var xSlotAssigned = new Dictionary<string, double>();
+            
+            // Track the next available X slot globally (like a "cursor" moving left to right)
+            double nextXSlot = 0;
+            
+            // DFS that assigns X positions in left-to-right subtree order
+            var xVisited = new HashSet<string>();
+            
+            void AssignXPositions(string nodeId)
+            {
+                if (xVisited.Contains(nodeId)) return;
+                xVisited.Add(nodeId);
+                
+                // Get non-back-edge children, sorted to keep left branch first
+                var children = new List<string>();
+                if (outgoing.ContainsKey(nodeId))
+                {
+                    foreach (var child in outgoing[nodeId])
+                    {
+                        if (!backEdges.Contains((nodeId, child)) && !xVisited.Contains(child))
+                        {
+                            children.Add(child);
+                        }
+                    }
+                }
+                
+                if (children.Count == 0)
+                {
+                    // Leaf node: assign the next available slot
+                    xSlotAssigned[nodeId] = nextXSlot;
+                    nextXSlot++;
+                }
+                else
+                {
+                    // Internal node: recurse into children, then center over them
+                    double firstChildSlot = double.MaxValue;
+                    double lastChildSlot = double.MinValue;
+                    
+                    foreach (var child in children)
+                    {
+                        AssignXPositions(child);
+                        if (xSlotAssigned.ContainsKey(child))
+                        {
+                            firstChildSlot = Math.Min(firstChildSlot, xSlotAssigned[child]);
+                            lastChildSlot = Math.Max(lastChildSlot, xSlotAssigned[child]);
+                        }
+                    }
+                    
+                    if (firstChildSlot <= lastChildSlot)
+                    {
+                        xSlotAssigned[nodeId] = (firstChildSlot + lastChildSlot) / 2.0;
+                    }
+                    else
+                    {
+                        xSlotAssigned[nodeId] = nextXSlot;
+                        nextXSlot++;
+                    }
+                }
             }
             
             if (entryLoc != null)
             {
-                // Do DFS to find back-edges
-                DFS(entryLoc.Id, 0, new HashSet<string>());
-                
-                // Now do BFS ignoring back-edges
-                var queue = new Queue<(string id, int level)>();
-                queue.Enqueue((entryLoc.Id, 0));
-                levels[entryLoc.Id] = 0;
-                visited.Add(entryLoc.Id);
-                
-                while (queue.Count > 0)
+                AssignXPositions(entryLoc.Id);
+            }
+            
+            // Assign any unvisited nodes
+            foreach (var loc in locations)
+            {
+                if (!xSlotAssigned.ContainsKey(loc.Id))
                 {
-                    var (currentId, currentLevel) = queue.Dequeue();
-                    
-                    if (outgoing.ContainsKey(currentId))
-                    {
-                        foreach (var nextId in outgoing[currentId])
-                        {
-                            // Skip back-edges
-                            if (backEdges.Contains((currentId, nextId)))
-                                continue;
-                                
-                            if (!levels.ContainsKey(nextId))
-                            {
-                                levels[nextId] = currentLevel + 1;
-                                visited.Add(nextId);
-                                queue.Enqueue((nextId, currentLevel + 1));
-                            }
-                            else
-                            {
-                                // Update to max level
-                                levels[nextId] = Math.Max(levels[nextId], currentLevel + 1);
-                            }
-                        }
-                    }
-                }
-                
-                // Assign level to any unreached nodes (shouldn't happen in well-formed CFG)
-                foreach (var loc in locations)
-                {
-                    if (!levels.ContainsKey(loc.Id))
-                    {
-                        levels[loc.Id] = 0;
-                    }
+                    xSlotAssigned[loc.Id] = nextXSlot;
+                    nextXSlot++;
                 }
             }
             
-            // Assign horizontal positions for nodes at the same level (for branching)
-            var levelNodes = new Dictionary<int, List<string>>();
-            foreach (var loc in locations)
-            {
-                int level = levels.ContainsKey(loc.Id) ? levels[loc.Id] : 0;
-                if (!levelNodes.ContainsKey(level))
-                    levelNodes[level] = new List<string>();
-                levelNodes[level].Add(loc.Id);
-            }
-            
-            // Calculate final positions
-            var positionMap = new Dictionary<string, (int x, int y)>();
+            // Convert slot positions to pixel coordinates, centered around x=0
+            double minSlot = xSlotAssigned.Values.Min();
+            double maxSlot = xSlotAssigned.Values.Max();
+            double centerSlot = (minSlot + maxSlot) / 2.0;
             
             foreach (var loc in locations)
             {
-                int level = levels.ContainsKey(loc.Id) ? levels[loc.Id] : 0;
-                int y = (int)(startY + level * verticalSpacing);
-                
-                var nodesAtLevel = levelNodes[level];
-                int indexAtLevel = nodesAtLevel.IndexOf(loc.Id);
-                int totalAtLevel = nodesAtLevel.Count;
-                
-                int x;
-                if (totalAtLevel == 1)
-                {
-                    // Single node at this level - center it
-                    x = (int)startX;
-                }
-                else if (totalAtLevel == 2)
-                {
-                    // Two nodes - place left and right
-                    x = (int)(startX + (indexAtLevel == 0 ? -horizontalSpacing/2 : horizontalSpacing/2));
-                }
-                else
-                {
-                    // Multiple nodes - spread them out
-                    double totalWidth = (totalAtLevel - 1) * horizontalSpacing / 1.5;
-                    x = (int)(startX - totalWidth/2 + indexAtLevel * (horizontalSpacing / 1.5));
-                }
-                
+                int level = levels[loc.Id];
+                int y = startY + level * verticalSpacing;
+                int x = (int)((xSlotAssigned[loc.Id] - centerSlot) * horizontalSpacing);
                 positionMap[loc.Id] = (x, y);
             }
 
             // Generate location elements
             foreach (var location in locations)
             {
-                if (!positionMap.ContainsKey(location.Id))
-                {
-                    positionMap[location.Id] = (0, 0);
-                }
-                
                 var (x, y) = positionMap[location.Id];
 
                 var locationElement = new XElement("location",
@@ -428,8 +493,6 @@ bool systemActive = true;
                 if (location.IsCommitted)
                     locationElement.Add(new XElement("committed"));
 
-                // Note: UPPAAL 4.1 does not support label kind="comment" on locations
-                // Only invariant labels are supported on locations in 4.1
                 foreach (var label in location.Labels)
                 {
                     if (label.Key == "invariant")
@@ -446,7 +509,7 @@ bool systemActive = true;
                 locationElements.Add(locationElement);
             }
             
-            return (locationElements, positionMap, levels);
+            return (locationElements, positionMap, levels, backEdges);
         }
 
         private XElement GenerateInitialLocation(List<UppaalLocation> locations)
@@ -468,30 +531,143 @@ bool systemActive = true;
 
         private IEnumerable<XElement> GenerateTransitions(List<UppaalTransition> transitions, 
             Dictionary<string, (int x, int y)> positionMap, 
-            Dictionary<string, int> levels)
+            Dictionary<string, int> levels,
+            HashSet<(string, string)> backEdges)
         {
+            // Track how many transitions leave each source node for label offset
+            var sourceEdgeIndex = new Dictionary<string, int>();
+            
+            // Build a list of all node positions for overlap detection
+            var allPositions = positionMap.Values.ToList();
+            
+            // Pre-compute: for each source, count outgoing non-back-edge transitions
+            var outgoingCount = new Dictionary<string, int>();
+            foreach (var t in transitions)
+            {
+                if (!backEdges.Contains((t.Source, t.Target)))
+                {
+                    if (!outgoingCount.ContainsKey(t.Source))
+                        outgoingCount[t.Source] = 0;
+                    outgoingCount[t.Source]++;
+                }
+            }
+
             foreach (var transition in transitions)
             {
-                // UPPAAL 4.1 does not support 'id' attribute on transitions
                 var transitionElement = new XElement("transition",
                     new XElement("source", new XAttribute("ref", transition.Source)),
                     new XElement("target", new XAttribute("ref", transition.Target))
                 );
 
-                // Position labels to the side of edges
-                int labelOffsetX = 20;
-                int labelOffsetY = -15;
+                int labelX = 20;
+                int labelY = -15;
+                bool isBackEdge = backEdges.Contains((transition.Source, transition.Target));
+                
+                // Collect nail elements separately — UPPAAL DTD requires labels before nails
+                var nailElements = new List<XElement>();
 
-                // Add select if present (for parametric models)
+                if (positionMap.ContainsKey(transition.Source) && positionMap.ContainsKey(transition.Target))
+                {
+                    var sourcePos = positionMap[transition.Source];
+                    var targetPos = positionMap[transition.Target];
+
+                    if (isBackEdge)
+                    {
+                        // Back-edge: route to the left with nails
+                        int leftMost = Math.Min(sourcePos.x, targetPos.x);
+                        int nailX = leftMost - 150;
+                        labelX = nailX - 10;
+                        labelY = (sourcePos.y + targetPos.y) / 2;
+
+                        nailElements.Add(new XElement("nail",
+                            new XAttribute("x", nailX),
+                            new XAttribute("y", sourcePos.y)
+                        ));
+                        nailElements.Add(new XElement("nail",
+                            new XAttribute("x", nailX),
+                            new XAttribute("y", targetPos.y)
+                        ));
+                    }
+                    else
+                    {
+                        // Check if this edge would overlap with another edge from the same source.
+                        // This happens when a condition node has two outgoing edges and one "skips"
+                        // over intermediate nodes to reach a further target in the same column.
+                        int levelDiff = (levels.ContainsKey(transition.Target) ? levels[transition.Target] : 0)
+                                      - (levels.ContainsKey(transition.Source) ? levels[transition.Source] : 0);
+                        int srcOutCount = outgoingCount.ContainsKey(transition.Source) ? outgoingCount[transition.Source] : 1;
+                        
+                        bool needsDetour = false;
+                        
+                        // If this source has multiple outgoing edges AND the edge spans more than 1 level
+                        // AND the source and target are in roughly the same column, we need to detour
+                        if (srcOutCount >= 2 && levelDiff > 1)
+                        {
+                            // Check if there are intermediate nodes between source and target
+                            // that would cause visual overlap
+                            int minY = Math.Min(sourcePos.y, targetPos.y);
+                            int maxY = Math.Max(sourcePos.y, targetPos.y);
+                            int xThreshold = 60; // consider "same column" if within this range
+                            
+                            foreach (var pos in allPositions)
+                            {
+                                if (pos.y > minY && pos.y < maxY && Math.Abs(pos.x - sourcePos.x) < xThreshold)
+                                {
+                                    needsDetour = true;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if (needsDetour)
+                        {
+                            // Route this edge to the right side to avoid overlapping the straight-down edge
+                            int detourX = Math.Max(sourcePos.x, targetPos.x) + 130;
+                            
+                            nailElements.Add(new XElement("nail",
+                                new XAttribute("x", detourX),
+                                new XAttribute("y", sourcePos.y + 30)
+                            ));
+                            nailElements.Add(new XElement("nail",
+                                new XAttribute("x", detourX),
+                                new XAttribute("y", targetPos.y - 30)
+                            ));
+                            
+                            // Label goes beside the detour
+                            labelX = detourX + 10;
+                            labelY = (sourcePos.y + targetPos.y) / 2 - 10;
+                        }
+                        else
+                        {
+                            // Normal forward edge: place label at the midpoint
+                            int midX = (sourcePos.x + targetPos.x) / 2;
+                            int midY = (sourcePos.y + targetPos.y) / 2;
+
+                            if (!sourceEdgeIndex.ContainsKey(transition.Source))
+                                sourceEdgeIndex[transition.Source] = 0;
+                            sourceEdgeIndex[transition.Source]++;
+
+                            int dx = targetPos.x - sourcePos.x;
+                            int sideOffset = dx < -20 ? -15 : (dx > 20 ? 15 : 8);
+                            
+                            labelX = midX + sideOffset;
+                            labelY = midY - 15;
+                        }
+                    }
+                }
+
+                int currentLabelY = labelY;
+
+                // Add select if present
                 if (!string.IsNullOrEmpty(transition.Select))
                 {
                     transitionElement.Add(new XElement("label",
                         new XAttribute("kind", "select"),
-                        new XAttribute("x", labelOffsetX),
-                        new XAttribute("y", labelOffsetY),
+                        new XAttribute("x", labelX),
+                        new XAttribute("y", currentLabelY),
                         transition.Select
                     ));
-                    labelOffsetY += 16;
+                    currentLabelY += 16;
                 }
 
                 // Add guard if present
@@ -499,11 +675,11 @@ bool systemActive = true;
                 {
                     transitionElement.Add(new XElement("label",
                         new XAttribute("kind", "guard"),
-                        new XAttribute("x", labelOffsetX),
-                        new XAttribute("y", labelOffsetY),
+                        new XAttribute("x", labelX),
+                        new XAttribute("y", currentLabelY),
                         transition.Guard
                     ));
-                    labelOffsetY += 16;
+                    currentLabelY += 16;
                 }
 
                 // Add synchronisation if present
@@ -511,11 +687,11 @@ bool systemActive = true;
                 {
                     transitionElement.Add(new XElement("label",
                         new XAttribute("kind", "synchronisation"),
-                        new XAttribute("x", labelOffsetX),
-                        new XAttribute("y", labelOffsetY),
+                        new XAttribute("x", labelX),
+                        new XAttribute("y", currentLabelY),
                         transition.Synchronization
                     ));
-                    labelOffsetY += 16;
+                    currentLabelY += 16;
                 }
 
                 // Add assignment (update) if present
@@ -523,36 +699,16 @@ bool systemActive = true;
                 {
                     transitionElement.Add(new XElement("label",
                         new XAttribute("kind", "assignment"),
-                        new XAttribute("x", labelOffsetX),
-                        new XAttribute("y", labelOffsetY),
+                        new XAttribute("x", labelX),
+                        new XAttribute("y", currentLabelY),
                         transition.Update
                     ));
                 }
 
-                // Detect back-edges (loop-back edges) and add nail points to avoid overlap
-                if (positionMap.ContainsKey(transition.Source) && positionMap.ContainsKey(transition.Target))
+                // Add nails AFTER all labels — UPPAAL DTD requires: source, target, label*, nail*
+                foreach (var nail in nailElements)
                 {
-                    var sourcePos = positionMap[transition.Source];
-                    var targetPos = positionMap[transition.Target];
-                    int sourceLevel = levels.ContainsKey(transition.Source) ? levels[transition.Source] : 0;
-                    int targetLevel = levels.ContainsKey(transition.Target) ? levels[transition.Target] : 0;
-                    
-                    // If target is at same level or higher (back-edge/loop-back)
-                    if (targetLevel <= sourceLevel)
-                    {
-                        // Add nail points to curve the edge to the left
-                        int nailOffset = -150; // Go 150 pixels to the left
-                        
-                        // Add two nails to create a nice curve on the left side
-                        transitionElement.Add(new XElement("nail",
-                            new XAttribute("x", sourcePos.x + nailOffset),
-                            new XAttribute("y", sourcePos.y)
-                        ));
-                        transitionElement.Add(new XElement("nail",
-                            new XAttribute("x", targetPos.x + nailOffset),
-                            new XAttribute("y", targetPos.y)
-                        ));
-                    }
+                    transitionElement.Add(nail);
                 }
 
                 yield return transitionElement;
@@ -585,5 +741,13 @@ bool systemActive = true;
         public UppaalGenerationException(string message) : base(message) { }
         public UppaalGenerationException(string message, Exception innerException)
             : base(message, innerException) { }
+    }
+
+    /// <summary>
+    /// StringWriter that reports UTF-8 encoding so XDocument.Save produces encoding="utf-8" in the XML declaration.
+    /// </summary>
+    internal class Utf8StringWriter : System.IO.StringWriter
+    {
+        public override Encoding Encoding => Encoding.UTF8;
     }
 }

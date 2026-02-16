@@ -217,7 +217,14 @@ namespace CSharpToUppaal.Backend.Generators
             string trueExitId = null;
             if (ifStmt.Statement != null)
             {
-                trueExitId = await ProcessStatementAsync(ifStmt.Statement, cfg, conditionNode.Id);
+                // First add the edge from condition to the true branch with "true" label
+                var trueBranchFirst = await ProcessStatementAsync(ifStmt.Statement, cfg, conditionNode.Id);
+                trueExitId = trueBranchFirst;
+                
+                // Label the edge from condition to the first node of the true branch
+                var trueEdge = cfg.Edges.FirstOrDefault(e => e.FromNodeId == conditionNode.Id && e.ToNodeId != conditionNode.Id && string.IsNullOrEmpty(e.Label));
+                if (trueEdge != null)
+                    trueEdge.Label = "true";
             }
 
             // Process false branch
@@ -225,6 +232,11 @@ namespace CSharpToUppaal.Backend.Generators
             if (ifStmt.Else != null)
             {
                 falseExitId = await ProcessStatementAsync(ifStmt.Else.Statement, cfg, conditionNode.Id);
+                
+                // Label the edge from condition to the first node of the false branch
+                var falseEdge = cfg.Edges.LastOrDefault(e => e.FromNodeId == conditionNode.Id && string.IsNullOrEmpty(e.Label));
+                if (falseEdge != null)
+                    falseEdge.Label = "false";
             }
 
             // Create merge node
@@ -264,6 +276,11 @@ namespace CSharpToUppaal.Backend.Generators
             if (whileStmt.Statement != null)
             {
                 bodyExitId = await ProcessStatementAsync(whileStmt.Statement, cfg, conditionNode.Id);
+                
+                // Label the edge from condition to the first node of the body as "true"
+                var bodyEdge = cfg.Edges.FirstOrDefault(e => e.FromNodeId == conditionNode.Id && string.IsNullOrEmpty(e.Label));
+                if (bodyEdge != null)
+                    bodyEdge.Label = "true";
             }
 
             // Create loop exit node
@@ -277,10 +294,10 @@ namespace CSharpToUppaal.Backend.Generators
             // Connect condition to exit (false condition)
             AddEdge(cfg, conditionNode.Id, exitNode.Id, "false");
 
-            // Connect body back to condition (true condition)
+            // Connect body back to condition (loop back)
             if (!string.IsNullOrEmpty(bodyExitId))
             {
-                AddEdge(cfg, bodyExitId, conditionNode.Id, "true");
+                AddEdge(cfg, bodyExitId, conditionNode.Id);
             }
 
             return exitNode.Id;
@@ -302,6 +319,16 @@ namespace CSharpToUppaal.Backend.Generators
                 cfg.Nodes.Add(initNode);
                 AddEdge(cfg, currentId, initNode.Id);
                 currentId = initNode.Id;
+
+                // Extract for-loop variable declarations for UPPAAL
+                if (forStmt.Declaration != null)
+                {
+                    string typeName = forStmt.Declaration.Type.ToString();
+                    foreach (var variable in forStmt.Declaration.Variables)
+                    {
+                        cfg.Variables[variable.Identifier.Text] = typeName;
+                    }
+                }
             }
 
             // Create condition node
@@ -320,6 +347,11 @@ namespace CSharpToUppaal.Backend.Generators
             if (forStmt.Statement != null)
             {
                 bodyExitId = await ProcessStatementAsync(forStmt.Statement, cfg, conditionNode.Id);
+                
+                // Label the edge from condition to the first node of the body as "true"
+                var bodyEdge = cfg.Edges.FirstOrDefault(e => e.FromNodeId == conditionNode.Id && string.IsNullOrEmpty(e.Label));
+                if (bodyEdge != null)
+                    bodyEdge.Label = "true";
             }
 
             // Process incrementors
@@ -344,9 +376,9 @@ namespace CSharpToUppaal.Backend.Generators
                 afterIncrementId = bodyExitId;
             }
 
-            // Connect back to condition
+            // Connect back to condition (loop back, no label needed - it's unconditional)
             if (!string.IsNullOrEmpty(afterIncrementId))
-                AddEdge(cfg, afterIncrementId, conditionNode.Id, "loop");
+                AddEdge(cfg, afterIncrementId, conditionNode.Id);
 
             // Create exit node
             var exitNode = new CfgNode
@@ -355,7 +387,7 @@ namespace CSharpToUppaal.Backend.Generators
                 Type = NodeType.Statement
             };
             cfg.Nodes.Add(exitNode);
-            AddEdge(cfg, conditionNode.Id, exitNode.Id, "exit");
+            AddEdge(cfg, conditionNode.Id, exitNode.Id, "false");
 
             return exitNode.Id;
         }
@@ -433,6 +465,15 @@ namespace CSharpToUppaal.Backend.Generators
             };
             cfg.Nodes.Add(node);
             AddEdge(cfg, previousNodeId, node.Id);
+
+            // Extract variable names and types for UPPAAL declarations
+            var declaration = localDecl.Declaration;
+            string typeName = declaration.Type.ToString();
+            foreach (var variable in declaration.Variables)
+            {
+                cfg.Variables[variable.Identifier.Text] = typeName;
+            }
+
             return node.Id;
         }
 

@@ -13,30 +13,43 @@ var uppaalGenerator = new UppaalGeneratorService(cfgGenerator);
 
 string testCode = @"using System;
 
-namespace Example
+namespace BankSystem
 {
-    public class Calculator
+    public class Account
     {
-        public int Add(int a, int b)
+        public int GetBalance(int deposits, int withdrawals)
         {
-            if (a > 0 && b > 0)
+            int balance = deposits - withdrawals;
+            if (balance < 0)
             {
-                return a + b;
+                balance = 0;
             }
-            else
-            {
-                return 0;
-            }
+            return balance;
         }
-        
-        public int Factorial(int n)
+
+        public int ProcessTransaction(int balance, int amount, int txType)
         {
-            int result = 1;
-            for (int i = 2; i <= n; i++)
+            int result = balance;
+            if (txType == 1)
             {
-                result *= i;
+                result = balance + amount;
+            }
+            else if (txType == 2 && balance >= amount)
+            {
+                result = balance - amount;
             }
             return result;
+        }
+
+        public int CalculateInterest(int principal, int rate, int years)
+        {
+            int amount = principal;
+            for (int i = 0; i < years; i++)
+            {
+                int interest = amount * rate / 100;
+                amount = amount + interest;
+            }
+            return amount;
         }
     }
 }";

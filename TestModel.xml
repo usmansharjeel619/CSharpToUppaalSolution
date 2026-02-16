@@ -1,42 +1,37 @@
 <!DOCTYPE nta PUBLIC "-//Uppaal Team//DTD Flat System 1.1//EN" "http://www.it.uu.se/research/group/darts/uppaal/flat-1_1.dtd">
 <nta>
-  <declaration>
-// Global declarations generated from C# code
-chan request, response;
-clock globalClock;
-
-// Global variables
-int globalCounter = 0;
-bool systemActive = true;
+  <declaration>// Global declarations
 </declaration>
   <template>
-    <name>Add</name>
-    <declaration>// Function: Add
+    <name>GetBalance</name>
+    <declaration>// Function: GetBalance
 // Return type: int
 
-int a;
-int b;
-clock t_Add;
+int balance;
+int deposits;
+int withdrawals;
 </declaration>
     <location id="id0" x="0" y="-200">
       <name x="-45" y="-235">Entry</name>
     </location>
     <location id="id1" x="0" y="-100">
-      <name x="-45" y="-135">a__0__b__0</name>
+      <name x="-45" y="-135">int_balance__deposits___withdr</name>
     </location>
-    <location id="id2" x="-100" y="0">
-      <name x="-145" y="-35">return_a__b</name>
+    <location id="id2" x="0" y="0">
+      <name x="-45" y="-35">balance__0</name>
+    </location>
+    <location id="id3" x="0" y="100">
+      <name x="-45" y="65">Expression</name>
+    </location>
+    <location id="id4" x="0" y="200">
+      <name x="-45" y="165">Merge</name>
+    </location>
+    <location id="id5" x="0" y="300">
+      <name x="-45" y="265">return_balance</name>
       <urgent />
     </location>
-    <location id="id3" x="100" y="0">
-      <name x="55" y="-35">return_0</name>
-      <urgent />
-    </location>
-    <location id="id4" x="0" y="100">
-      <name x="-45" y="65">Merge</name>
-    </location>
-    <location id="id5" x="0" y="200">
-      <name x="-45" y="165">Exit</name>
+    <location id="id6" x="0" y="400">
+      <name x="-45" y="365">Exit</name>
     </location>
     <init ref="id0" />
     <transition>
@@ -46,67 +41,76 @@ clock t_Add;
     <transition>
       <source ref="id1" />
       <target ref="id2" />
-      <label kind="guard" x="20" y="-15">a &gt; 0 &amp;&amp; b &gt; 0</label>
-    </transition>
-    <transition>
-      <source ref="id1" />
-      <target ref="id3" />
-      <label kind="guard" x="20" y="-15">a &gt; 0 &amp;&amp; b &gt; 0</label>
+      <label kind="assignment" x="8" y="-65">balance = deposits - withdrawals</label>
     </transition>
     <transition>
       <source ref="id2" />
-      <target ref="id4" />
+      <target ref="id3" />
+      <label kind="guard" x="8" y="35">balance &lt; 0</label>
     </transition>
     <transition>
       <source ref="id3" />
       <target ref="id4" />
+      <label kind="assignment" x="8" y="135">balance = 0</label>
+    </transition>
+    <transition>
+      <source ref="id2" />
+      <target ref="id4" />
+      <label kind="guard" x="140" y="90">balance &gt;= 0</label>
+      <nail x="130" y="30" />
+      <nail x="130" y="170" />
     </transition>
     <transition>
       <source ref="id4" />
       <target ref="id5" />
     </transition>
+    <transition>
+      <source ref="id5" />
+      <target ref="id6" />
+    </transition>
   </template>
   <template>
-    <name>Factorial</name>
-    <declaration>// Function: Factorial
+    <name>ProcessTransaction</name>
+    <declaration>// Function: ProcessTransaction
 // Return type: int
 
-int n;
-clock t_Factorial;
+int result;
+int balance;
+int amount;
+int txType;
 </declaration>
-    <location id="id6" x="0" y="-200">
+    <location id="id7" x="0" y="-200">
       <name x="-45" y="-235">Entry</name>
     </location>
-    <location id="id7" x="0" y="-100">
-      <name x="-45" y="-135">int_result__1</name>
+    <location id="id8" x="0" y="-100">
+      <name x="-45" y="-135">int_result__balance</name>
     </location>
-    <location id="id8" x="0" y="0">
-      <name x="-45" y="-35">int_i__2</name>
+    <location id="id9" x="0" y="0">
+      <name x="-45" y="-35">txType__1</name>
     </location>
-    <location id="id9" x="0" y="100">
-      <name x="-45" y="65">i__n</name>
+    <location id="id10" x="-85" y="100">
+      <name x="-130" y="65">Expression</name>
     </location>
-    <location id="id10" x="-100" y="200">
-      <name x="-145" y="165">Expression</name>
+    <location id="id11" x="85" y="100">
+      <name x="40" y="65">txType__2__balance__amount</name>
     </location>
-    <location id="id11" x="-100" y="300">
-      <name x="-145" y="265">For_Increment</name>
+    <location id="id12" x="85" y="200">
+      <name x="40" y="165">Expression_1</name>
     </location>
-    <location id="id12" x="100" y="200">
-      <name x="55" y="165">For_Exit</name>
+    <location id="id13" x="85" y="300">
+      <name x="40" y="265">Merge</name>
     </location>
-    <location id="id13" x="100" y="300">
-      <name x="55" y="265">return_result</name>
+    <location id="id14" x="-85" y="400">
+      <name x="-130" y="365">Merge_1</name>
+    </location>
+    <location id="id15" x="-85" y="500">
+      <name x="-130" y="465">return_result</name>
       <urgent />
     </location>
-    <location id="id14" x="0" y="400">
-      <name x="-45" y="365">Exit</name>
+    <location id="id16" x="-85" y="600">
+      <name x="-130" y="565">Exit</name>
     </location>
-    <init ref="id6" />
-    <transition>
-      <source ref="id6" />
-      <target ref="id7" />
-    </transition>
+    <init ref="id7" />
     <transition>
       <source ref="id7" />
       <target ref="id8" />
@@ -114,37 +118,148 @@ clock t_Factorial;
     <transition>
       <source ref="id8" />
       <target ref="id9" />
+      <label kind="assignment" x="8" y="-65">result = balance</label>
     </transition>
     <transition>
       <source ref="id9" />
       <target ref="id10" />
-      <label kind="guard" x="20" y="-15">i &lt;= n</label>
-    </transition>
-    <transition>
-      <source ref="id10" />
-      <target ref="id11" />
-    </transition>
-    <transition>
-      <source ref="id11" />
-      <target ref="id9" />
-      <nail x="-250" y="300" />
-      <nail x="-150" y="100" />
+      <label kind="guard" x="-57" y="35">txType == 1</label>
     </transition>
     <transition>
       <source ref="id9" />
+      <target ref="id11" />
+      <label kind="guard" x="57" y="35">txType != 1</label>
+    </transition>
+    <transition>
+      <source ref="id11" />
       <target ref="id12" />
-      <label kind="guard" x="20" y="-15">i &lt;= n</label>
+      <label kind="guard" x="93" y="135">txType == 2 &amp;&amp; balance &gt;= amount</label>
     </transition>
     <transition>
       <source ref="id12" />
       <target ref="id13" />
+      <label kind="assignment" x="93" y="235">result = balance - amount</label>
+    </transition>
+    <transition>
+      <source ref="id11" />
+      <target ref="id13" />
+      <label kind="guard" x="225" y="190">not(txType == 2 &amp;&amp; balance &gt;= amount)</label>
+      <nail x="215" y="130" />
+      <nail x="215" y="270" />
+    </transition>
+    <transition>
+      <source ref="id10" />
+      <target ref="id14" />
+      <label kind="assignment" x="-77" y="235">result = balance + amount</label>
     </transition>
     <transition>
       <source ref="id13" />
       <target ref="id14" />
     </transition>
+    <transition>
+      <source ref="id14" />
+      <target ref="id15" />
+    </transition>
+    <transition>
+      <source ref="id15" />
+      <target ref="id16" />
+    </transition>
   </template>
-  <system>system Add, Factorial;</system>
+  <template>
+    <name>CalculateInterest</name>
+    <declaration>// Function: CalculateInterest
+// Return type: int
+
+int amount;
+int i;
+int interest;
+int principal;
+int rate;
+int years;
+</declaration>
+    <location id="id17" x="0" y="-200">
+      <name x="-45" y="-235">Entry</name>
+    </location>
+    <location id="id18" x="0" y="-100">
+      <name x="-45" y="-135">int_amount__principal</name>
+    </location>
+    <location id="id19" x="0" y="0">
+      <name x="-45" y="-35">int_i__0</name>
+    </location>
+    <location id="id20" x="0" y="100">
+      <name x="-45" y="65">i__years</name>
+    </location>
+    <location id="id21" x="-85" y="200">
+      <name x="-130" y="165">int_interest__amount__rate__10</name>
+    </location>
+    <location id="id22" x="-85" y="300">
+      <name x="-130" y="265">Expression</name>
+    </location>
+    <location id="id23" x="-85" y="400">
+      <name x="-130" y="365">For_Increment</name>
+    </location>
+    <location id="id24" x="85" y="200">
+      <name x="40" y="165">For_Exit</name>
+    </location>
+    <location id="id25" x="85" y="300">
+      <name x="40" y="265">return_amount</name>
+      <urgent />
+    </location>
+    <location id="id26" x="85" y="400">
+      <name x="40" y="365">Exit</name>
+    </location>
+    <init ref="id17" />
+    <transition>
+      <source ref="id17" />
+      <target ref="id18" />
+    </transition>
+    <transition>
+      <source ref="id18" />
+      <target ref="id19" />
+      <label kind="assignment" x="8" y="-65">amount = principal</label>
+    </transition>
+    <transition>
+      <source ref="id19" />
+      <target ref="id20" />
+      <label kind="assignment" x="8" y="35">i = 0</label>
+    </transition>
+    <transition>
+      <source ref="id20" />
+      <target ref="id21" />
+      <label kind="guard" x="-57" y="135">i &lt; years</label>
+    </transition>
+    <transition>
+      <source ref="id21" />
+      <target ref="id22" />
+      <label kind="assignment" x="-77" y="235">interest = amount * rate / 100</label>
+    </transition>
+    <transition>
+      <source ref="id22" />
+      <target ref="id23" />
+      <label kind="assignment" x="-77" y="335">amount = amount + interest</label>
+    </transition>
+    <transition>
+      <source ref="id23" />
+      <target ref="id20" />
+      <label kind="assignment" x="-245" y="250">i = i + 1</label>
+      <nail x="-235" y="400" />
+      <nail x="-235" y="100" />
+    </transition>
+    <transition>
+      <source ref="id20" />
+      <target ref="id24" />
+      <label kind="guard" x="57" y="135">i &gt;= years</label>
+    </transition>
+    <transition>
+      <source ref="id24" />
+      <target ref="id25" />
+    </transition>
+    <transition>
+      <source ref="id25" />
+      <target ref="id26" />
+    </transition>
+  </template>
+  <system>system GetBalance, ProcessTransaction, CalculateInterest;</system>
   <queries>
     <query>
       <formula>A[] not deadlock</formula>
