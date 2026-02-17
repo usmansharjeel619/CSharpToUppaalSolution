@@ -17,7 +17,16 @@ namespace BankSystem
 {
     public class Account
     {
-        public int GetBalance(int deposits, int withdrawals)
+        public static void Main()
+        {
+            int deposits = 500;
+            int withdrawals = 200;
+            int balance = GetBalance(deposits, withdrawals);
+            int updated = ProcessTransaction(balance, 50, 1);
+            int total = CalculateInterest(updated, 5, 3);
+        }
+
+        public static int GetBalance(int deposits, int withdrawals)
         {
             int balance = deposits - withdrawals;
             if (balance < 0)
@@ -27,7 +36,7 @@ namespace BankSystem
             return balance;
         }
 
-        public int ProcessTransaction(int balance, int amount, int txType)
+        public static int ProcessTransaction(int balance, int amount, int txType)
         {
             int result = balance;
             if (txType == 1)
@@ -41,7 +50,7 @@ namespace BankSystem
             return result;
         }
 
-        public int CalculateInterest(int principal, int rate, int years)
+        public static int CalculateInterest(int principal, int rate, int years)
         {
             int amount = principal;
             for (int i = 0; i < years; i++)

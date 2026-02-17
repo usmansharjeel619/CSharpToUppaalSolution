@@ -2,12 +2,17 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using CSharpToUppaal.Backend.Generators;
 using CSharpToUppaal.Backend.Mappers;
 using CSharpToUppaal.Backend.Models;
 using CSharpToUppaal.Backend.Parsers;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Project = CSharpToUppaal.Backend.Models.Project;
 
 namespace CSharpToUppaal.Backend.Services
 {
@@ -59,6 +64,7 @@ namespace CSharpToUppaal.Backend.Services
                 }
 
                 model.Templates = templates;
+                model.ParsedMethods = parseResult.Methods;
                 model.XmlContent = await GenerateUppaalXmlAsync(model);
                 model.Status = ModelGenerationStatus.Success;
                 model.StatusMessage = "Model generated successfully";
@@ -114,6 +120,7 @@ namespace CSharpToUppaal.Backend.Services
                 };
 
                 var templates = new List<UppaalTemplate>();
+                var allMethods = new List<Models.MethodInfo>();
 
                 foreach (var sourceFile in project.SourceFiles)
                 {
@@ -122,10 +129,12 @@ namespace CSharpToUppaal.Backend.Services
                         var cfg = await _cfgGenerator.GenerateCfgFromMethodAsync(method);
                         var template = MapCfgToUppaalTemplate(cfg);
                         templates.Add(template);
+                        allMethods.Add(method);
                     }
                 }
 
                 model.Templates = templates;
+                model.ParsedMethods = allMethods;
                 model.XmlContent = await GenerateUppaalXmlAsync(model);
                 model.Status = ModelGenerationStatus.Success;
                 model.StatusMessage = $"Generated model from {project.SourceFiles.Count} source files";
@@ -152,10 +161,20 @@ namespace CSharpToUppaal.Backend.Services
         {
             try
             {
+                // Determine which methods are converted to UPPAAL functions
+                // so we can exclude them from templates (avoid "Duplicate definition" errors)
+                var functionNames = new HashSet<string>();
+                if (model.ParsedMethods != null && model.ParsedMethods.Count > 0)
+                {
+                    var calledMethods = FindCalledMethods(model.ParsedMethods);
+                    foreach (var m in calledMethods)
+                        functionNames.Add(m.Name);
+                }
+
                 var ntaElement = new XElement("nta",
-                    GenerateGlobalDeclaration(),
-                    GenerateTemplates(model.Templates),
-                    GenerateSystemDeclaration(model.Templates),
+                    GenerateGlobalDeclaration(model),
+                    GenerateTemplates(model.Templates, functionNames),
+                    GenerateSystemDeclaration(model.Templates, functionNames),
                     GenerateQueries()
                 );
 
@@ -183,20 +202,350 @@ namespace CSharpToUppaal.Backend.Services
             return mapper.Map(cfg);
         }
 
-        private XElement GenerateGlobalDeclaration()
+        private XElement GenerateGlobalDeclaration(UppaalModel model)
         {
-            return new XElement("declaration",
-                new XText("// Global declarations\n")
-            );
+            var sb = new StringBuilder();
+            sb.AppendLine("// Global declarations");
+
+            // Detect which methods are called by other methods, and generate UPPAAL functions for them
+            if (model.ParsedMethods != null && model.ParsedMethods.Count > 0)
+            {
+                var calledMethods = FindCalledMethods(model.ParsedMethods);
+                if (calledMethods.Count > 0)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("// --- Functions converted from C# methods ---");
+                    foreach (var method in calledMethods)
+                    {
+                        var uppaalFunc = ConvertMethodToUppaalFunction(method);
+                        if (!string.IsNullOrEmpty(uppaalFunc))
+                        {
+                            sb.AppendLine();
+                            sb.Append(uppaalFunc);
+                        }
+                    }
+                }
+            }
+
+            return new XElement("declaration", new XText(sb.ToString()));
         }
 
-        private IEnumerable<XElement> GenerateTemplates(List<UppaalTemplate> templates)
+        /// <summary>
+        /// Finds methods that are called by other methods (i.e., they appear as function calls in other method bodies).
+        /// </summary>
+        private List<Models.MethodInfo> FindCalledMethods(List<Models.MethodInfo> methods)
+        {
+            var calledNames = new HashSet<string>();
+
+            foreach (var method in methods)
+            {
+                if (string.IsNullOrEmpty(method.Body)) continue;
+
+                // Parse the body and look for InvocationExpressionSyntax
+                var tree = CSharpSyntaxTree.ParseText(method.Body);
+                var root = tree.GetRoot();
+                var invocations = root.DescendantNodes().OfType<InvocationExpressionSyntax>();
+
+                foreach (var invocation in invocations)
+                {
+                    string calledName = null;
+                    if (invocation.Expression is IdentifierNameSyntax id)
+                        calledName = id.Identifier.Text;
+                    else if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+                        calledName = memberAccess.Name.Identifier.Text;
+
+                    if (calledName != null)
+                        calledNames.Add(calledName);
+                }
+            }
+
+            // Return methods whose names match called names
+            return methods.Where(m => calledNames.Contains(m.Name)).ToList();
+        }
+
+        /// <summary>
+        /// Converts a C# method into a UPPAAL function declaration.
+        /// UPPAAL requires: all local declarations at the top of a block (before any statements),
+        /// and for-loop inits must be expressions (no declarations like "int i = 0").
+        /// </summary>
+        private string ConvertMethodToUppaalFunction(Models.MethodInfo method)
+        {
+            if (string.IsNullOrEmpty(method.Body)) return string.Empty;
+
+            var sb = new StringBuilder();
+
+            // Return type
+            string uppaalRetType = MapCSharpTypeToUppaalType(method.ReturnType);
+
+            // Parameters
+            var paramList = new List<string>();
+            var paramNames = new HashSet<string>();
+            foreach (var p in method.Parameters)
+            {
+                string pType = MapCSharpTypeToUppaalType(p.Type);
+                paramList.Add($"{pType} {p.Name}");
+                paramNames.Add(p.Name);
+            }
+
+            sb.AppendLine($"{uppaalRetType} {method.Name}({string.Join(", ", paramList)}) {{");
+
+            // Parse body
+            var tree = CSharpSyntaxTree.ParseText(method.Body);
+            var root = tree.GetRoot();
+            var block = root.DescendantNodes().OfType<BlockSyntax>().FirstOrDefault();
+
+            if (block != null)
+            {
+                // --- Pass 1: Collect ALL local variable declarations (including nested) ---
+                // UPPAAL requires all declarations at the top of the function block.
+                var localVars = new Dictionary<string, string>(); // name -> uppaalType
+                CollectAllLocalVariables(block, localVars, paramNames);
+
+                // Emit all local variable declarations at the top
+                foreach (var kv in localVars)
+                {
+                    sb.AppendLine($"    {kv.Value} {kv.Key};");
+                }
+
+                // --- Pass 2: Emit statements, converting declarations to assignments ---
+                foreach (var statement in block.Statements)
+                {
+                    var lines = ConvertStatementToUppaal(statement, 1);
+                    sb.Append(lines);
+                }
+            }
+
+            sb.AppendLine("}");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Recursively collects all local variable declarations from a block and all nested blocks.
+        /// This includes variables from local declarations, for-loop initializers, and nested scopes.
+        /// </summary>
+        private void CollectAllLocalVariables(SyntaxNode node, Dictionary<string, string> vars, HashSet<string> paramNames)
+        {
+            foreach (var descendant in node.DescendantNodes())
+            {
+                if (descendant is LocalDeclarationStatementSyntax localDecl)
+                {
+                    string typeName = MapCSharpTypeToUppaalType(localDecl.Declaration.Type.ToString());
+                    foreach (var variable in localDecl.Declaration.Variables)
+                    {
+                        string name = variable.Identifier.Text;
+                        if (!paramNames.Contains(name) && !vars.ContainsKey(name))
+                            vars[name] = typeName;
+                    }
+                }
+                else if (descendant is ForStatementSyntax forStmt && forStmt.Declaration != null)
+                {
+                    string typeName = MapCSharpTypeToUppaalType(forStmt.Declaration.Type.ToString());
+                    foreach (var variable in forStmt.Declaration.Variables)
+                    {
+                        string name = variable.Identifier.Text;
+                        if (!paramNames.Contains(name) && !vars.ContainsKey(name))
+                            vars[name] = typeName;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Recursively converts a C# statement into UPPAAL function body syntax.
+        /// Local declarations are emitted as assignments (variables are pre-declared at the top).
+        /// For-loop initializers have their type stripped (variable is pre-declared).
+        /// </summary>
+        private string ConvertStatementToUppaal(StatementSyntax statement, int indent)
+        {
+            var prefix = new string(' ', indent * 4);
+            var sb = new StringBuilder();
+
+            switch (statement)
+            {
+                case LocalDeclarationStatementSyntax localDecl:
+                {
+                    // Variable is already declared at the top — just emit the assignment
+                    foreach (var variable in localDecl.Declaration.Variables)
+                    {
+                        if (variable.Initializer != null)
+                            sb.AppendLine($"{prefix}{variable.Identifier.Text} = {ConvertExpression(variable.Initializer.Value.ToString())};");
+                        // If no initializer, nothing to emit (declaration is already at top)
+                    }
+                    break;
+                }
+
+                case ExpressionStatementSyntax exprStmt:
+                {
+                    sb.AppendLine($"{prefix}{ConvertExpression(exprStmt.Expression.ToString())};");
+                    break;
+                }
+
+                case ReturnStatementSyntax returnStmt:
+                {
+                    if (returnStmt.Expression != null)
+                        sb.AppendLine($"{prefix}return {ConvertExpression(returnStmt.Expression.ToString())};");
+                    else
+                        sb.AppendLine($"{prefix}return;");
+                    break;
+                }
+
+                case IfStatementSyntax ifStmt:
+                {
+                    sb.AppendLine($"{prefix}if ({ConvertExpression(ifStmt.Condition.ToString())}) {{");
+                    if (ifStmt.Statement is BlockSyntax ifBlock)
+                    {
+                        foreach (var s in ifBlock.Statements)
+                            sb.Append(ConvertStatementToUppaal(s, indent + 1));
+                    }
+                    else
+                    {
+                        sb.Append(ConvertStatementToUppaal(ifStmt.Statement, indent + 1));
+                    }
+                    sb.AppendLine($"{prefix}}}");
+
+                    if (ifStmt.Else != null)
+                    {
+                        // Check for "else if"
+                        if (ifStmt.Else.Statement is IfStatementSyntax elseIf)
+                        {
+                            sb.Append($"{prefix}else ");
+                            // Remove leading indent from the recursive call since we already have "else "
+                            var elseIfStr = ConvertStatementToUppaal(elseIf, indent);
+                            sb.Append(elseIfStr.TrimStart());
+                        }
+                        else
+                        {
+                            sb.AppendLine($"{prefix}else {{");
+                            if (ifStmt.Else.Statement is BlockSyntax elseBlock)
+                            {
+                                foreach (var s in elseBlock.Statements)
+                                    sb.Append(ConvertStatementToUppaal(s, indent + 1));
+                            }
+                            else
+                            {
+                                sb.Append(ConvertStatementToUppaal(ifStmt.Else.Statement, indent + 1));
+                            }
+                            sb.AppendLine($"{prefix}}}");
+                        }
+                    }
+                    break;
+                }
+
+                case ForStatementSyntax forStmt:
+                {
+                    // UPPAAL for-loop init must be an expression, not a declaration.
+                    // The variable is already declared at the top of the function.
+                    string init = "";
+                    if (forStmt.Declaration != null)
+                    {
+                        // Strip the type — just emit "varName = value" assignments
+                        var inits = forStmt.Declaration.Variables
+                            .Where(v => v.Initializer != null)
+                            .Select(v => $"{v.Identifier.Text} = {ConvertExpression(v.Initializer.Value.ToString())}");
+                        init = string.Join(", ", inits);
+                    }
+                    else if (forStmt.Initializers.Any())
+                    {
+                        init = string.Join(", ", forStmt.Initializers.Select(i => ConvertExpression(i.ToString())));
+                    }
+
+                    string cond = forStmt.Condition != null ? ConvertExpression(forStmt.Condition.ToString()) : "true";
+                    string incr = string.Join(", ", forStmt.Incrementors.Select(i => ConvertExpression(i.ToString())));
+
+                    sb.AppendLine($"{prefix}for ({init}; {cond}; {incr}) {{");
+                    if (forStmt.Statement is BlockSyntax forBlock)
+                    {
+                        foreach (var s in forBlock.Statements)
+                            sb.Append(ConvertStatementToUppaal(s, indent + 1));
+                    }
+                    else
+                    {
+                        sb.Append(ConvertStatementToUppaal(forStmt.Statement, indent + 1));
+                    }
+                    sb.AppendLine($"{prefix}}}");
+                    break;
+                }
+
+                case WhileStatementSyntax whileStmt:
+                {
+                    sb.AppendLine($"{prefix}while ({ConvertExpression(whileStmt.Condition.ToString())}) {{");
+                    if (whileStmt.Statement is BlockSyntax whileBlock)
+                    {
+                        foreach (var s in whileBlock.Statements)
+                            sb.Append(ConvertStatementToUppaal(s, indent + 1));
+                    }
+                    else
+                    {
+                        sb.Append(ConvertStatementToUppaal(whileStmt.Statement, indent + 1));
+                    }
+                    sb.AppendLine($"{prefix}}}");
+                    break;
+                }
+
+                case BlockSyntax blockStmt:
+                {
+                    foreach (var s in blockStmt.Statements)
+                        sb.Append(ConvertStatementToUppaal(s, indent));
+                    break;
+                }
+
+                default:
+                    // Fallback: emit as-is
+                    sb.AppendLine($"{prefix}{ConvertExpression(statement.ToString().Trim())};");
+                    break;
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Converts a C# expression string to UPPAAL-compatible syntax.
+        /// UPPAAL functions support standard C operators, so most expressions need no conversion.
+        /// </summary>
+        private string ConvertExpression(string expr)
+        {
+            // UPPAAL function bodies support ++, --, +=, etc., and all C operators
+            // No special conversion needed for: +, -, *, /, %, ==, !=, <, >, <=, >=, &&, ||, !
+            return expr.Trim();
+        }
+
+        private string MapCSharpTypeToUppaalType(string csharpType)
+        {
+            switch (csharpType?.Trim().ToLower())
+            {
+                case "int":
+                case "int32":
+                case "int16":
+                case "int64":
+                case "short":
+                case "long":
+                case "byte":
+                    return "int";
+                case "bool":
+                case "boolean":
+                    return "bool";
+                case "double":
+                case "float":
+                case "decimal":
+                    return "int"; // UPPAAL has no floats; approximate as int
+                case "void":
+                    return "void";
+                default:
+                    return "int";
+            }
+        }
+
+        private IEnumerable<XElement> GenerateTemplates(List<UppaalTemplate> templates, HashSet<string> functionNames)
         {
             int templateIndex = 0;
             int globalIdCounter = 0; // Shared counter across all templates for unique id values
             
             foreach (var template in templates)
             {
+                // Skip templates that are already generated as UPPAAL functions in the global declaration
+                if (functionNames.Contains(template.Name))
+                    continue;
+
                 // Remap location IDs to UPPAAL 4.1 compatible format (id0, id1, id2, ...)
                 var idRemap = new Dictionary<string, string>();
                 foreach (var loc in template.Locations)
@@ -715,9 +1064,10 @@ namespace CSharpToUppaal.Backend.Services
             }
         }
 
-        private XElement GenerateSystemDeclaration(List<UppaalTemplate> templates)
+        private XElement GenerateSystemDeclaration(List<UppaalTemplate> templates, HashSet<string> functionNames)
         {
-            var templateNames = templates.Select(t => t.Name);
+            // Exclude templates that are generated as functions (they don't run as processes)
+            var templateNames = templates.Where(t => !functionNames.Contains(t.Name)).Select(t => t.Name);
             var systemText = $"system {string.Join(", ", templateNames)};";
 
             return new XElement("system",

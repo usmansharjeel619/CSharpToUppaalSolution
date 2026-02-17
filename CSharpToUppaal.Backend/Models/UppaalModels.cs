@@ -158,6 +158,7 @@ namespace CSharpToUppaal.Backend.Models
         public ModelGenerationStatus Status { get; set; }
         public string StatusMessage { get; set; } = string.Empty;
         public List<UppaalTemplate> Templates { get; set; } = new();
+        public List<MethodInfo> ParsedMethods { get; set; } = new();
         public VerificationSummary VerificationSummary { get; set; } = new();
     }
 

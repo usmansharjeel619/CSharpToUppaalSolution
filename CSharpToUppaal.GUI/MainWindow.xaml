@@ -77,10 +77,12 @@
                           Margin="8,0"/>
 
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <!-- Settings button hidden
                     <Button Content="Settings" 
                             Command="{Binding OpenSettingsCommand}"
                             Style="{StaticResource WhiteButtonStyle}"
                             Margin="8,0"/>
+                    -->
                     <Button Content="Clear All" 
                             Command="{Binding ClearAllCommand}"
                             Style="{StaticResource WhiteButtonStyle}"
@@ -255,7 +257,7 @@
                 </Grid>
             </TabItem>
 
-            <!-- Verification Results Tab -->
+            <!-- Verification Results Tab (hidden)
             <TabItem Header="Verification">
                 <Grid Background="{StaticResource BackgroundBrush}">
                     <Grid.RowDefinitions>
@@ -263,7 +265,6 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <!-- Toolbar with white buttons -->
                     <StackPanel Grid.Row="0" 
                                Orientation="Horizontal" 
                                Background="{StaticResource PrimaryMidBrush}"
@@ -311,6 +312,7 @@
                     </DataGrid>
                 </Grid>
             </TabItem>
+            -->
 
             <!-- Analysis Results Tab -->
             <TabItem Header="Analysis">
