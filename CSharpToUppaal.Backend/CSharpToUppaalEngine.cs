@@ -22,6 +22,12 @@ namespace CSharpToUppaal.Backend
         Task<ControlFlowGraph> GenerateCfgForMethodAsync(MethodInfo method);
         Task<string> ExportUppaalModelAsync(UppaalModel model, string filePath);
         Task<string> GenerateDotGraphAsync(ControlFlowGraph cfg);
+
+        /// <summary>
+        /// Takes a UPPAAL XML string with jumbled/overlapping layout and returns
+        /// a new XML string with clean, non-overlapping positions.
+        /// </summary>
+        string FixUppaalLayout(string uppaalXml);
     }
 
     public class CSharpToUppaalEngine : ICSharpToUppaalEngine
@@ -30,17 +36,20 @@ namespace CSharpToUppaal.Backend
         private readonly ICfgGeneratorService _cfgGenerator;
         private readonly IUppaalGeneratorService _uppaalGenerator;
         private readonly IUppaalVerifier _verifier;
+        private readonly IUppaalLayoutService _layoutService;
 
         public CSharpToUppaalEngine(
             ICSharpParserService parser = null,
             ICfgGeneratorService cfgGenerator = null,
             IUppaalGeneratorService uppaalGenerator = null,
-            IUppaalVerifier verifier = null)
+            IUppaalVerifier verifier = null,
+            IUppaalLayoutService layoutService = null)
         {
             _parser = parser ?? new CSharpParser();
             _cfgGenerator = cfgGenerator ?? new CfgGeneratorService(_parser);
             _uppaalGenerator = uppaalGenerator ?? new UppaalGeneratorService(_cfgGenerator);
             _verifier = verifier ?? new UppaalVerifier();
+            _layoutService = layoutService ?? new UppaalLayoutService();
         }
 
         public async Task<Project> CreateProjectAsync(string name, string description = "")
@@ -268,6 +277,22 @@ namespace CSharpToUppaal.Backend
             dotBuilder.AppendLine("}");
 
             return dotBuilder.ToString();
+        }
+
+        public string FixUppaalLayout(string uppaalXml)
+        {
+            try
+            {
+                Console.WriteLine("Fixing UPPAAL XML layout...");
+                var result = _layoutService.FixLayout(uppaalXml);
+                Console.WriteLine("Layout fixed successfully.");
+                return result;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fixing layout: {ex.Message}");
+                throw;
+            }
         }
     }
 }

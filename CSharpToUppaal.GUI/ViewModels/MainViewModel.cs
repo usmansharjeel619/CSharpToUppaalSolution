@@ -96,6 +96,13 @@ namespace BankSystem
         [ObservableProperty]
         private bool _isXmlReadOnly = true;
 
+        // ── Layout Fixer tab properties ──
+        [ObservableProperty]
+        private string _layoutInputXml = "";
+
+        [ObservableProperty]
+        private string _layoutOutputXml = "";
+
         [ObservableProperty]
         private ObservableCollection<CSharpToUppaal.Backend.Models.MethodInfo> _methods = new();
 
@@ -1240,6 +1247,123 @@ namespace BankSystem
 
         [RelayCommand]
         private async Task SaveModel() => await ExportModel();
+
+        // ── Layout Fixer tab commands ──────────────────────────────────
+
+        [RelayCommand]
+        private async Task LoadLayoutInput()
+        {
+            try
+            {
+                var openFileDialog = new OpenFileDialog
+                {
+                    Filter = "UPPAAL XML Files (*.xml)|*.xml|All files (*.*)|*.*",
+                    Title = "Load UPPAAL XML for Layout Fixing"
+                };
+
+                if (openFileDialog.ShowDialog() != true) return;
+
+                IsBusy = true;
+                StatusMessage = $"Loading {IOPath.GetFileName(openFileDialog.FileName)}...";
+
+                string rawXml = await System.IO.File.ReadAllTextAsync(openFileDialog.FileName);
+                LayoutInputXml = rawXml;
+                LayoutOutputXml = "";
+
+                StatusMessage = $"Loaded {IOPath.GetFileName(openFileDialog.FileName)} — click \"Fix Layout\" to process.";
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Error loading XML: {ex.Message}";
+                MessageBox.Show($"Error loading XML:\n{ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                IsBusy = false;
+            }
+        }
+
+        [RelayCommand]
+        private async Task FixLayout()
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(LayoutInputXml))
+                {
+                    MessageBox.Show("Please load or paste UPPAAL XML into the Input panel first.",
+                        "No Input XML", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                IsBusy = true;
+                StatusMessage = "Fixing UPPAAL model layout...";
+
+                string fixedXml = await Task.Run(() => _engine.FixUppaalLayout(LayoutInputXml));
+
+                LayoutOutputXml = fixedXml;
+
+                StatusMessage = "Layout fixed — nodes repositioned, edges re-routed.";
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Error fixing layout: {ex.Message}";
+                MessageBox.Show($"Error fixing layout:\n{ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                IsBusy = false;
+            }
+        }
+
+        [RelayCommand]
+        private async Task ExportFixedLayout()
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(LayoutOutputXml))
+                {
+                    MessageBox.Show("No fixed XML to export. Run \"Fix Layout\" first.",
+                        "No Output", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                var saveFileDialog = new SaveFileDialog
+                {
+                    Filter = "UPPAAL XML Files (*.xml)|*.xml|All files (*.*)|*.*",
+                    Title = "Export Fixed UPPAAL XML",
+                    FileName = "FixedModel.xml"
+                };
+
+                if (saveFileDialog.ShowDialog() != true) return;
+
+                IsBusy = true;
+                StatusMessage = "Exporting fixed XML...";
+
+                await System.IO.File.WriteAllTextAsync(saveFileDialog.FileName, LayoutOutputXml);
+
+                StatusMessage = $"Exported to {saveFileDialog.FileName}";
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Error exporting XML: {ex.Message}";
+                MessageBox.Show($"Error exporting XML:\n{ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                IsBusy = false;
+            }
+        }
+
+        [RelayCommand]
+        private void ClearLayout()
+        {
+            LayoutInputXml = "";
+            LayoutOutputXml = "";
+            StatusMessage = "Layout Fixer cleared.";
+        }
 
         [RelayCommand]
         private async Task ExportDot()

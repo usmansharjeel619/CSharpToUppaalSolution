@@ -414,6 +414,86 @@
                     </Grid>
                 </Grid>
             </TabItem>
+
+            <!-- Layout Fixer Tab -->
+            <TabItem Header="Layout Fixer">
+                <Grid Background="{StaticResource BackgroundBrush}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Toolbar -->
+                    <StackPanel Grid.Row="0" 
+                               Orientation="Horizontal" 
+                               Background="{StaticResource PrimaryMidBrush}">
+                        <Button Content="Load XML File" 
+                                Command="{Binding LoadLayoutInputCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                ToolTip="Open a UPPAAL XML file to fix"/>
+                        <Button Content="Fix Layout" 
+                                Command="{Binding FixLayoutCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                ToolTip="Re-compute positions for the input XML"/>
+                        <Button Content="Export Fixed XML" 
+                                Command="{Binding ExportFixedLayoutCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                ToolTip="Save the corrected XML to a file"/>
+                        <Separator Margin="8,0" Background="White" Width="2"/>
+                        <Button Content="Clear" 
+                                Command="{Binding ClearLayoutCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                ToolTip="Clear both panels"/>
+                    </StackPanel>
+
+                    <!-- Two-panel layout: Input (left) → Output (right) -->
+                    <Grid Grid.Row="1" Margin="4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Input panel -->
+                        <DockPanel Grid.Column="0">
+                            <TextBlock DockPanel.Dock="Top" 
+                                     Text="Input XML (paste or load a jumbled UPPAAL model)" 
+                                     FontWeight="SemiBold" Foreground="White"
+                                     Margin="8,6,8,4"/>
+                            <TextBox FontFamily="Consolas" FontSize="12"
+                                   Text="{Binding LayoutInputXml, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                   AcceptsReturn="True" AcceptsTab="True"
+                                   VerticalScrollBarVisibility="Auto"
+                                   HorizontalScrollBarVisibility="Auto"
+                                   Background="White" Foreground="Black"
+                                   Padding="10" Margin="4"/>
+                        </DockPanel>
+
+                        <!-- Arrow separator -->
+                        <TextBlock Grid.Column="1" Text="➜" 
+                                 FontSize="28" FontWeight="Bold"
+                                 Foreground="{StaticResource PrimaryMidBrush}"
+                                 VerticalAlignment="Center" 
+                                 Margin="6,0"/>
+
+                        <!-- Output panel -->
+                        <DockPanel Grid.Column="2">
+                            <TextBlock DockPanel.Dock="Top" 
+                                     Text="Output XML (fixed layout)" 
+                                     FontWeight="SemiBold" Foreground="White"
+                                     Margin="8,6,8,4"/>
+                            <TextBox FontFamily="Consolas" FontSize="12"
+                                   Text="{Binding LayoutOutputXml, Mode=TwoWay}"
+                                   AcceptsReturn="True" AcceptsTab="True"
+                                   VerticalScrollBarVisibility="Auto"
+                                   HorizontalScrollBarVisibility="Auto"
+                                   IsReadOnly="True"
+                                   Background="#FAFAFA" Foreground="Black"
+                                   Padding="10" Margin="4"/>
+                        </DockPanel>
+                    </Grid>
+                </Grid>
+            </TabItem>
         </TabControl>
 
         <!-- Status Bar -->

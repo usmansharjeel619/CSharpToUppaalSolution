@@ -223,5 +223,55 @@ catch (Exception ex)
     }
 }
 
+// Run the layout fixer test
+TestLayoutFixer();
+
 Console.WriteLine("\n\nPress any key to exit...");
 Console.ReadKey();
+
+// ═══════════════════════════════════════════════════════════════
+//  LAYOUT FIXER TEST — independent of the C#-to-UPPAAL pipeline
+// ═══════════════════════════════════════════════════════════════
+void TestLayoutFixer()
+{
+    Console.WriteLine("\n============================================================");
+    Console.WriteLine("Testing Layout Fixer (standalone feature)");
+    Console.WriteLine("============================================================\n");
+
+    // Read the generated TestModel.xml (which has correct layout)
+    // and scramble the positions, then fix them.
+    string testModelPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "TestModel.xml");
+    if (!File.Exists(testModelPath))
+    {
+        testModelPath = Path.Combine(Directory.GetCurrentDirectory(), "TestModel.xml");
+    }
+
+    if (!File.Exists(testModelPath))
+    {
+        Console.WriteLine("⚠️  TestModel.xml not found — skipping layout fixer test.");
+        return;
+    }
+
+    string originalXml = File.ReadAllText(testModelPath);
+    Console.WriteLine($"Loaded TestModel.xml ({originalXml.Length} chars)");
+
+    // Scramble: replace all x/y attributes on <location> with random values
+    var scrambled = originalXml;
+    var rng = new Random(42);
+    scrambled = System.Text.RegularExpressions.Regex.Replace(
+        scrambled,
+        @"(<location\s+id=""[^""]*"")\s+x=""[^""]*""\s+y=""[^""]*""",
+        m => $"{m.Groups[1].Value} x=\"{rng.Next(-500, 500)}\" y=\"{rng.Next(-500, 500)}\"");
+
+    Console.WriteLine("Scrambled all location positions to random values.");
+
+    // Fix it
+    var layoutService = new UppaalLayoutService();
+    string fixedXml = layoutService.FixLayout(scrambled);
+
+    string fixedPath = Path.Combine(Path.GetDirectoryName(testModelPath)!, "TestModel_Fixed.xml");
+    File.WriteAllText(fixedPath, fixedXml);
+    Console.WriteLine($"\n✅ Fixed XML saved to: {fixedPath}");
+    Console.WriteLine($"   Original length: {originalXml.Length}  →  Fixed length: {fixedXml.Length}");
+    Console.WriteLine("\nOpen both in UPPAAL to compare!");
+}
