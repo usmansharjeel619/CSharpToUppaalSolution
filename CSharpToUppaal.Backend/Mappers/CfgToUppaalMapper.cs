@@ -182,6 +182,7 @@ namespace CSharpToUppaal.Backend.Mappers
             }
 
             // Add updates for assignments, declarations with initializers, and expression statements
+            // But NOT for MethodCall nodes — those are handled by sync channel expansion
             if ((fromNode?.Type == NodeType.Assignment || fromNode?.Type == NodeType.Declaration || fromNode?.Type == NodeType.Statement) 
                 && !string.IsNullOrEmpty(fromNode.Code))
             {
@@ -221,6 +222,10 @@ namespace CSharpToUppaal.Backend.Mappers
                     break;
                 case NodeType.Declaration:
                     name = ShortenCode(code);
+                    break;
+                case NodeType.MethodCall:
+                    // Use the label from CFG which is "Call <MethodName>"
+                    name = string.IsNullOrEmpty(node.Label) ? "MethodCall" : node.Label;
                     break;
                 case NodeType.Merge:
                     name = "Merge";

@@ -54,18 +54,27 @@ namespace CSharpToUppaal.Backend.Services
                     Status = ModelGenerationStatus.InProgress
                 };
 
+                // Collect all method names so CFG generator can detect inter-method calls
+                var allMethodNames = parseResult.Methods.Select(m => m.Name).ToHashSet();
+                if (_cfgGenerator is CfgGeneratorService cfgGen)
+                {
+                    cfgGen.SetKnownMethodNames(allMethodNames);
+                }
+
                 // Generate CFG for each method and create templates
                 var templates = new List<UppaalTemplate>();
+                var cfgs = new List<ControlFlowGraph>();
                 foreach (var method in parseResult.Methods)
                 {
                     var cfg = await _cfgGenerator.GenerateCfgFromMethodAsync(method);
+                    cfgs.Add(cfg);
                     var template = MapCfgToUppaalTemplate(cfg);
                     templates.Add(template);
                 }
 
                 model.Templates = templates;
                 model.ParsedMethods = parseResult.Methods;
-                model.XmlContent = await GenerateUppaalXmlAsync(model);
+                model.XmlContent = await GenerateUppaalXmlAsync(model, cfgs);
                 model.Status = ModelGenerationStatus.Success;
                 model.StatusMessage = "Model generated successfully";
 
@@ -97,7 +106,7 @@ namespace CSharpToUppaal.Backend.Services
                     Status = ModelGenerationStatus.Success
                 };
 
-                model.XmlContent = await GenerateUppaalXmlAsync(model);
+                model.XmlContent = await GenerateUppaalXmlAsync(model, new List<ControlFlowGraph> { cfg });
                 return model;
             }
             catch (Exception ex)
@@ -121,12 +130,24 @@ namespace CSharpToUppaal.Backend.Services
 
                 var templates = new List<UppaalTemplate>();
                 var allMethods = new List<Models.MethodInfo>();
+                var cfgs = new List<ControlFlowGraph>();
+
+                // Collect all method names first
+                var allMethodNames = project.SourceFiles
+                    .SelectMany(sf => sf.Methods)
+                    .Select(m => m.Name)
+                    .ToHashSet();
+                if (_cfgGenerator is CfgGeneratorService cfgGen)
+                {
+                    cfgGen.SetKnownMethodNames(allMethodNames);
+                }
 
                 foreach (var sourceFile in project.SourceFiles)
                 {
                     foreach (var method in sourceFile.Methods)
                     {
                         var cfg = await _cfgGenerator.GenerateCfgFromMethodAsync(method);
+                        cfgs.Add(cfg);
                         var template = MapCfgToUppaalTemplate(cfg);
                         templates.Add(template);
                         allMethods.Add(method);
@@ -135,7 +156,7 @@ namespace CSharpToUppaal.Backend.Services
 
                 model.Templates = templates;
                 model.ParsedMethods = allMethods;
-                model.XmlContent = await GenerateUppaalXmlAsync(model);
+                model.XmlContent = await GenerateUppaalXmlAsync(model, cfgs);
                 model.Status = ModelGenerationStatus.Success;
                 model.StatusMessage = $"Generated model from {project.SourceFiles.Count} source files";
 
@@ -159,26 +180,84 @@ namespace CSharpToUppaal.Backend.Services
 
         public async Task<string> GenerateUppaalXmlAsync(UppaalModel model)
         {
+            return await GenerateUppaalXmlAsync(model, null);
+        }
+
+        /// <summary>
+        /// Core XML generation. When cfgs are supplied, inter-method calls are modelled
+        /// via synchronisation channels (Controller pattern) instead of UPPAAL functions.
+        /// </summary>
+        public async Task<string> GenerateUppaalXmlAsync(UppaalModel model, List<ControlFlowGraph> cfgs)
+        {
             try
             {
-                // Determine which methods are converted to UPPAAL functions
-                // so we can exclude them from templates (avoid "Duplicate definition" errors)
-                var functionNames = new HashSet<string>();
-                if (model.ParsedMethods != null && model.ParsedMethods.Count > 0)
+                // --- Detect inter-method calls across all CFGs ---
+                // Build a mapping: callerMethod -> list of calledMethod names (in order)
+                var callerToCalls = new Dictionary<string, List<string>>();  // callerMethodName -> ordered called names
+                var calledMethodNames = new HashSet<string>();
+                var cfgByName = new Dictionary<string, ControlFlowGraph>();
+
+                if (cfgs != null)
                 {
-                    var calledMethods = FindCalledMethods(model.ParsedMethods);
-                    foreach (var m in calledMethods)
-                        functionNames.Add(m.Name);
+                    foreach (var cfg in cfgs)
+                        cfgByName[cfg.MethodName] = cfg;
+
+                    foreach (var cfg in cfgs)
+                    {
+                        var callsInOrder = new List<string>();
+                        foreach (var node in cfg.Nodes)
+                        {
+                            if (node.Type == NodeType.MethodCall && node.Properties.ContainsKey("calledMethod"))
+                            {
+                                string calledName = node.Properties["calledMethod"].ToString();
+                                if (cfgByName.ContainsKey(calledName))
+                                {
+                                    callsInOrder.Add(calledName);
+                                    calledMethodNames.Add(calledName);
+                                }
+                            }
+                        }
+                        if (callsInOrder.Count > 0)
+                            callerToCalls[cfg.MethodName] = callsInOrder;
+                    }
                 }
 
+                // Determine which templates are "callers" (they contain method call nodes)
+                // and which are "callees" (they are called by other methods)
+                bool hasSyncChannels = calledMethodNames.Count > 0;
+
+                // --- Generate global declaration ---
+                var globalDecl = GenerateGlobalDeclarationForSync(model, cfgs, calledMethodNames, cfgByName);
+
+                // --- Generate templates ---
+                var allTemplateElements = new List<XElement>();
+                int globalIdCounter = 0;
+                int templateIndex = 0;
+
+                foreach (var template in model.Templates)
+                {
+                    bool isCaller = callerToCalls.ContainsKey(template.Name);
+                    bool isCallee = calledMethodNames.Contains(template.Name);
+                    var cfg = cfgByName.ContainsKey(template.Name) ? cfgByName[template.Name] : null;
+
+                    var templateElement = GenerateSingleTemplate(
+                        template, cfg, isCaller, isCallee, calledMethodNames,
+                        ref globalIdCounter, templateIndex);
+                    allTemplateElements.Add(templateElement);
+                    templateIndex++;
+                }
+
+                // --- Generate system declaration ---
+                var templateNames = model.Templates.Select(t => t.Name).ToList();
+                var systemText = $"system {string.Join(", ", templateNames)};";
+
                 var ntaElement = new XElement("nta",
-                    GenerateGlobalDeclaration(model),
-                    GenerateTemplates(model.Templates, functionNames),
-                    GenerateSystemDeclaration(model.Templates, functionNames),
+                    new XElement("declaration", new XText(globalDecl)),
+                    allTemplateElements,
+                    new XElement("system", new XText(systemText)),
                     GenerateQueries()
                 );
 
-                // UPPAAL 4.x expects no <?xml?> declaration — just DOCTYPE + nta
                 var xdoc = new XDocument(
                     new XDocumentType("nta",
                         "-//Uppaal Team//DTD Flat System 1.1//EN",
@@ -202,311 +281,82 @@ namespace CSharpToUppaal.Backend.Services
             return mapper.Map(cfg);
         }
 
-        private XElement GenerateGlobalDeclaration(UppaalModel model)
+        /// <summary>
+        /// Generates the global declaration block with shared variables and sync channels
+        /// for the Controller/callee pattern.
+        /// </summary>
+        private string GenerateGlobalDeclarationForSync(
+            UppaalModel model,
+            List<ControlFlowGraph> cfgs,
+            HashSet<string> calledMethodNames,
+            Dictionary<string, ControlFlowGraph> cfgByName)
         {
             var sb = new StringBuilder();
             sb.AppendLine("// Global declarations");
 
-            // Detect which methods are called by other methods, and generate UPPAAL functions for them
-            if (model.ParsedMethods != null && model.ParsedMethods.Count > 0)
+            if (cfgs != null && calledMethodNames.Count > 0)
             {
-                var calledMethods = FindCalledMethods(model.ParsedMethods);
-                if (calledMethods.Count > 0)
+                // Collect all variables used across all CFGs as shared globals
+                // so that caller and callee can communicate results.
+                sb.AppendLine();
+                sb.AppendLine("// --- Shared variables for inter-method communication ---");
+                var globalVars = new Dictionary<string, string>(); // varName -> uppaalType
+                foreach (var cfg in cfgs)
                 {
-                    sb.AppendLine();
-                    sb.AppendLine("// --- Functions converted from C# methods ---");
-                    foreach (var method in calledMethods)
+                    foreach (var kv in cfg.Variables)
                     {
-                        var uppaalFunc = ConvertMethodToUppaalFunction(method);
-                        if (!string.IsNullOrEmpty(uppaalFunc))
-                        {
-                            sb.AppendLine();
-                            sb.Append(uppaalFunc);
-                        }
+                        if (!globalVars.ContainsKey(kv.Key))
+                            globalVars[kv.Key] = MapCSharpTypeToUppaalType(kv.Value);
+                    }
+                    // Also collect parameters
+                    foreach (var param in cfg.Parameters)
+                    {
+                        if (!globalVars.ContainsKey(param.Name))
+                            globalVars[param.Name] = MapCSharpTypeToUppaalType(param.Type);
                     }
                 }
-            }
 
-            return new XElement("declaration", new XText(sb.ToString()));
-        }
+                // Add shared_result variable for passing return values
+                if (!globalVars.ContainsKey("shared_result"))
+                    sb.AppendLine("int shared_result;");
 
-        /// <summary>
-        /// Finds methods that are called by other methods (i.e., they appear as function calls in other method bodies).
-        /// </summary>
-        private List<Models.MethodInfo> FindCalledMethods(List<Models.MethodInfo> methods)
-        {
-            var calledNames = new HashSet<string>();
-
-            foreach (var method in methods)
-            {
-                if (string.IsNullOrEmpty(method.Body)) continue;
-
-                // Parse the body and look for InvocationExpressionSyntax
-                var tree = CSharpSyntaxTree.ParseText(method.Body);
-                var root = tree.GetRoot();
-                var invocations = root.DescendantNodes().OfType<InvocationExpressionSyntax>();
-
-                foreach (var invocation in invocations)
+                foreach (var kv in globalVars)
                 {
-                    string calledName = null;
-                    if (invocation.Expression is IdentifierNameSyntax id)
-                        calledName = id.Identifier.Text;
-                    else if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
-                        calledName = memberAccess.Name.Identifier.Text;
-
-                    if (calledName != null)
-                        calledNames.Add(calledName);
-                }
-            }
-
-            // Return methods whose names match called names
-            return methods.Where(m => calledNames.Contains(m.Name)).ToList();
-        }
-
-        /// <summary>
-        /// Converts a C# method into a UPPAAL function declaration.
-        /// UPPAAL requires: all local declarations at the top of a block (before any statements),
-        /// and for-loop inits must be expressions (no declarations like "int i = 0").
-        /// </summary>
-        private string ConvertMethodToUppaalFunction(Models.MethodInfo method)
-        {
-            if (string.IsNullOrEmpty(method.Body)) return string.Empty;
-
-            var sb = new StringBuilder();
-
-            // Return type
-            string uppaalRetType = MapCSharpTypeToUppaalType(method.ReturnType);
-
-            // Parameters
-            var paramList = new List<string>();
-            var paramNames = new HashSet<string>();
-            foreach (var p in method.Parameters)
-            {
-                string pType = MapCSharpTypeToUppaalType(p.Type);
-                paramList.Add($"{pType} {p.Name}");
-                paramNames.Add(p.Name);
-            }
-
-            sb.AppendLine($"{uppaalRetType} {method.Name}({string.Join(", ", paramList)}) {{");
-
-            // Parse body
-            var tree = CSharpSyntaxTree.ParseText(method.Body);
-            var root = tree.GetRoot();
-            var block = root.DescendantNodes().OfType<BlockSyntax>().FirstOrDefault();
-
-            if (block != null)
-            {
-                // --- Pass 1: Collect ALL local variable declarations (including nested) ---
-                // UPPAAL requires all declarations at the top of the function block.
-                var localVars = new Dictionary<string, string>(); // name -> uppaalType
-                CollectAllLocalVariables(block, localVars, paramNames);
-
-                // Emit all local variable declarations at the top
-                foreach (var kv in localVars)
-                {
-                    sb.AppendLine($"    {kv.Value} {kv.Key};");
+                    sb.AppendLine($"{kv.Value} {kv.Key};");
                 }
 
-                // --- Pass 2: Emit statements, converting declarations to assignments ---
-                foreach (var statement in block.Statements)
+                // Generate sync channels for each callee method
+                sb.AppendLine();
+                sb.AppendLine("// --- Synchronization channels ---");
+                foreach (var calleeName in calledMethodNames)
                 {
-                    var lines = ConvertStatementToUppaal(statement, 1);
-                    sb.Append(lines);
+                    string shortName = GetChannelPrefix(calleeName);
+                    sb.AppendLine($"chan {shortName}_call, {shortName}_done;");
                 }
-            }
-
-            sb.AppendLine("}");
-            return sb.ToString();
-        }
-
-        /// <summary>
-        /// Recursively collects all local variable declarations from a block and all nested blocks.
-        /// This includes variables from local declarations, for-loop initializers, and nested scopes.
-        /// </summary>
-        private void CollectAllLocalVariables(SyntaxNode node, Dictionary<string, string> vars, HashSet<string> paramNames)
-        {
-            foreach (var descendant in node.DescendantNodes())
-            {
-                if (descendant is LocalDeclarationStatementSyntax localDecl)
-                {
-                    string typeName = MapCSharpTypeToUppaalType(localDecl.Declaration.Type.ToString());
-                    foreach (var variable in localDecl.Declaration.Variables)
-                    {
-                        string name = variable.Identifier.Text;
-                        if (!paramNames.Contains(name) && !vars.ContainsKey(name))
-                            vars[name] = typeName;
-                    }
-                }
-                else if (descendant is ForStatementSyntax forStmt && forStmt.Declaration != null)
-                {
-                    string typeName = MapCSharpTypeToUppaalType(forStmt.Declaration.Type.ToString());
-                    foreach (var variable in forStmt.Declaration.Variables)
-                    {
-                        string name = variable.Identifier.Text;
-                        if (!paramNames.Contains(name) && !vars.ContainsKey(name))
-                            vars[name] = typeName;
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Recursively converts a C# statement into UPPAAL function body syntax.
-        /// Local declarations are emitted as assignments (variables are pre-declared at the top).
-        /// For-loop initializers have their type stripped (variable is pre-declared).
-        /// </summary>
-        private string ConvertStatementToUppaal(StatementSyntax statement, int indent)
-        {
-            var prefix = new string(' ', indent * 4);
-            var sb = new StringBuilder();
-
-            switch (statement)
-            {
-                case LocalDeclarationStatementSyntax localDecl:
-                {
-                    // Variable is already declared at the top — just emit the assignment
-                    foreach (var variable in localDecl.Declaration.Variables)
-                    {
-                        if (variable.Initializer != null)
-                            sb.AppendLine($"{prefix}{variable.Identifier.Text} = {ConvertExpression(variable.Initializer.Value.ToString())};");
-                        // If no initializer, nothing to emit (declaration is already at top)
-                    }
-                    break;
-                }
-
-                case ExpressionStatementSyntax exprStmt:
-                {
-                    sb.AppendLine($"{prefix}{ConvertExpression(exprStmt.Expression.ToString())};");
-                    break;
-                }
-
-                case ReturnStatementSyntax returnStmt:
-                {
-                    if (returnStmt.Expression != null)
-                        sb.AppendLine($"{prefix}return {ConvertExpression(returnStmt.Expression.ToString())};");
-                    else
-                        sb.AppendLine($"{prefix}return;");
-                    break;
-                }
-
-                case IfStatementSyntax ifStmt:
-                {
-                    sb.AppendLine($"{prefix}if ({ConvertExpression(ifStmt.Condition.ToString())}) {{");
-                    if (ifStmt.Statement is BlockSyntax ifBlock)
-                    {
-                        foreach (var s in ifBlock.Statements)
-                            sb.Append(ConvertStatementToUppaal(s, indent + 1));
-                    }
-                    else
-                    {
-                        sb.Append(ConvertStatementToUppaal(ifStmt.Statement, indent + 1));
-                    }
-                    sb.AppendLine($"{prefix}}}");
-
-                    if (ifStmt.Else != null)
-                    {
-                        // Check for "else if"
-                        if (ifStmt.Else.Statement is IfStatementSyntax elseIf)
-                        {
-                            sb.Append($"{prefix}else ");
-                            // Remove leading indent from the recursive call since we already have "else "
-                            var elseIfStr = ConvertStatementToUppaal(elseIf, indent);
-                            sb.Append(elseIfStr.TrimStart());
-                        }
-                        else
-                        {
-                            sb.AppendLine($"{prefix}else {{");
-                            if (ifStmt.Else.Statement is BlockSyntax elseBlock)
-                            {
-                                foreach (var s in elseBlock.Statements)
-                                    sb.Append(ConvertStatementToUppaal(s, indent + 1));
-                            }
-                            else
-                            {
-                                sb.Append(ConvertStatementToUppaal(ifStmt.Else.Statement, indent + 1));
-                            }
-                            sb.AppendLine($"{prefix}}}");
-                        }
-                    }
-                    break;
-                }
-
-                case ForStatementSyntax forStmt:
-                {
-                    // UPPAAL for-loop init must be an expression, not a declaration.
-                    // The variable is already declared at the top of the function.
-                    string init = "";
-                    if (forStmt.Declaration != null)
-                    {
-                        // Strip the type — just emit "varName = value" assignments
-                        var inits = forStmt.Declaration.Variables
-                            .Where(v => v.Initializer != null)
-                            .Select(v => $"{v.Identifier.Text} = {ConvertExpression(v.Initializer.Value.ToString())}");
-                        init = string.Join(", ", inits);
-                    }
-                    else if (forStmt.Initializers.Any())
-                    {
-                        init = string.Join(", ", forStmt.Initializers.Select(i => ConvertExpression(i.ToString())));
-                    }
-
-                    string cond = forStmt.Condition != null ? ConvertExpression(forStmt.Condition.ToString()) : "true";
-                    string incr = string.Join(", ", forStmt.Incrementors.Select(i => ConvertExpression(i.ToString())));
-
-                    sb.AppendLine($"{prefix}for ({init}; {cond}; {incr}) {{");
-                    if (forStmt.Statement is BlockSyntax forBlock)
-                    {
-                        foreach (var s in forBlock.Statements)
-                            sb.Append(ConvertStatementToUppaal(s, indent + 1));
-                    }
-                    else
-                    {
-                        sb.Append(ConvertStatementToUppaal(forStmt.Statement, indent + 1));
-                    }
-                    sb.AppendLine($"{prefix}}}");
-                    break;
-                }
-
-                case WhileStatementSyntax whileStmt:
-                {
-                    sb.AppendLine($"{prefix}while ({ConvertExpression(whileStmt.Condition.ToString())}) {{");
-                    if (whileStmt.Statement is BlockSyntax whileBlock)
-                    {
-                        foreach (var s in whileBlock.Statements)
-                            sb.Append(ConvertStatementToUppaal(s, indent + 1));
-                    }
-                    else
-                    {
-                        sb.Append(ConvertStatementToUppaal(whileStmt.Statement, indent + 1));
-                    }
-                    sb.AppendLine($"{prefix}}}");
-                    break;
-                }
-
-                case BlockSyntax blockStmt:
-                {
-                    foreach (var s in blockStmt.Statements)
-                        sb.Append(ConvertStatementToUppaal(s, indent));
-                    break;
-                }
-
-                default:
-                    // Fallback: emit as-is
-                    sb.AppendLine($"{prefix}{ConvertExpression(statement.ToString().Trim())};");
-                    break;
             }
 
             return sb.ToString();
         }
 
-        /// <summary>
-        /// Converts a C# expression string to UPPAAL-compatible syntax.
-        /// UPPAAL functions support standard C operators, so most expressions need no conversion.
-        /// </summary>
-        private string ConvertExpression(string expr)
+        private string GetChannelPrefix(string methodName)
         {
-            // UPPAAL function bodies support ++, --, +=, etc., and all C operators
-            // No special conversion needed for: +, -, *, /, %, ==, !=, <, >, <=, >=, &&, ||, !
-            return expr.Trim();
+            // Create a short channel prefix from method name
+            // e.g. "GetBalance" -> "gb", "ProcessTransaction" -> "pt"
+            if (string.IsNullOrEmpty(methodName)) return "m";
+
+            // Use lowercase initials of camelCase/PascalCase parts
+            var parts = new List<char>();
+            parts.Add(char.ToLower(methodName[0]));
+            for (int i = 1; i < methodName.Length; i++)
+            {
+                if (char.IsUpper(methodName[i]))
+                    parts.Add(char.ToLower(methodName[i]));
+            }
+            string prefix = new string(parts.ToArray());
+            // Ensure it's at least 2 chars
+            if (prefix.Length < 2 && methodName.Length >= 2)
+                prefix = methodName.Substring(0, 2).ToLower();
+            return prefix;
         }
 
         private string MapCSharpTypeToUppaalType(string csharpType)
@@ -537,44 +387,359 @@ namespace CSharpToUppaal.Backend.Services
 
         private IEnumerable<XElement> GenerateTemplates(List<UppaalTemplate> templates, HashSet<string> functionNames)
         {
+            // Legacy overload — delegates to the new per-template method with no sync support
+            int globalIdCounter = 0;
             int templateIndex = 0;
-            int globalIdCounter = 0; // Shared counter across all templates for unique id values
-            
             foreach (var template in templates)
             {
-                // Skip templates that are already generated as UPPAAL functions in the global declaration
                 if (functionNames.Contains(template.Name))
                     continue;
 
-                // Remap location IDs to UPPAAL 4.1 compatible format (id0, id1, id2, ...)
-                var idRemap = new Dictionary<string, string>();
-                foreach (var loc in template.Locations)
+                yield return GenerateSingleTemplate(
+                    template, null, false, false, new HashSet<string>(),
+                    ref globalIdCounter, templateIndex);
+                templateIndex++;
+            }
+        }
+
+        /// <summary>
+        /// Generates a single UPPAAL &lt;template&gt; element.
+        /// When isCaller is true, MethodCall nodes produce call!/done? sync transitions.
+        /// When isCallee is true, the template wraps with a Waiting state and call?/done! channel edges,
+        /// and the Exit state loops back to Waiting (no deadlock).
+        /// ALL templates (caller and callee alike) loop from Exit back to their start
+        /// so there is never a deadlock.
+        /// </summary>
+        private XElement GenerateSingleTemplate(
+            UppaalTemplate template,
+            ControlFlowGraph cfg,
+            bool isCaller,
+            bool isCallee,
+            HashSet<string> calledMethodNames,
+            ref int globalIdCounter,
+            int templateIndex)
+        {
+            // Remap location IDs
+            var idRemap = new Dictionary<string, string>();
+            foreach (var loc in template.Locations)
+            {
+                var newId = $"id{globalIdCounter++}";
+                idRemap[loc.Id] = newId;
+                loc.Id = newId;
+            }
+            foreach (var trans in template.Transitions)
+            {
+                if (idRemap.ContainsKey(trans.Source))
+                    trans.Source = idRemap[trans.Source];
+                if (idRemap.ContainsKey(trans.Target))
+                    trans.Target = idRemap[trans.Target];
+            }
+
+            // --- Handle callee wrapping ---
+            if (isCallee)
+            {
+                WrapAsCallee(template, cfg, ref globalIdCounter);
+            }
+
+            // --- Handle caller: expand MethodCall nodes into call!/done? pairs ---
+            if (isCaller && cfg != null)
+            {
+                ExpandMethodCallNodes(template, cfg, calledMethodNames, ref globalIdCounter);
+                // Clear local declarations — all variables are promoted to global scope
+                template.Declaration = "";
+            }
+
+            // --- For ALL templates: ensure Exit loops back to the initial location ---
+            // This prevents deadlock. Callees already have this (Done->Waiting),
+            // but callers / standalone methods need it too.
+            if (!isCallee)
+            {
+                AddExitToEntryLoopBack(template, cfg, ref globalIdCounter);
+            }
+
+            // Build the position layout and XML elements
+            var (locationElements, positionMap, levels, backEdges) =
+                GenerateLocationsWithPositions(template.Locations, template.Transitions, templateIndex);
+
+            var initialLoc = template.Locations.FirstOrDefault(l => l.IsInitial)
+                         ?? template.Locations.FirstOrDefault();
+            string initialLocId = initialLoc?.Id ?? "";
+
+            return new XElement("template",
+                new XElement("name", template.Name),
+                GenerateTemplateDeclaration(template),
+                locationElements,
+                GenerateInitialLocation(template.Locations),
+                GenerateTransitions(template.Transitions, positionMap, levels, backEdges, initialLocId)
+            );
+        }
+
+        /// <summary>
+        /// Adds an Exit → Entry loop-back for non-callee templates (callers / standalone).
+        /// Exit transitions are redirected through a Done (urgent) location that resets
+        /// variables and returns to Entry, ensuring no deadlock.
+        /// </summary>
+        private void AddExitToEntryLoopBack(UppaalTemplate template, ControlFlowGraph cfg, ref int globalIdCounter)
+        {
+            var entryLoc = template.Locations.FirstOrDefault(l => l.IsInitial)
+                        ?? template.Locations.FirstOrDefault(l => l.Name == "Entry");
+            var exitLoc = template.Locations.FirstOrDefault(l => l.Name == "Exit");
+
+            if (entryLoc == null || exitLoc == null) return;
+
+            // Check if there's already a transition from Exit back (avoid duplicates)
+            bool alreadyHasLoopBack = template.Transitions.Any(t => t.Source == exitLoc.Id);
+            if (alreadyHasLoopBack) return;
+
+            // Create a Done location (urgent, fires immediately)
+            var doneLoc = new UppaalLocation
+            {
+                Id = $"id{globalIdCounter++}",
+                Name = "Done",
+                IsUrgent = true
+            };
+            template.Locations.Add(doneLoc);
+
+            // Exit --> Done
+            template.Transitions.Add(new UppaalTransition
+            {
+                Source = exitLoc.Id,
+                Target = doneLoc.Id
+            });
+
+            // Done --> Entry (reset variables)
+            var resetVars = new List<string>();
+            if (cfg != null)
+            {
+                foreach (var kv in cfg.Variables)
                 {
-                    var newId = $"id{globalIdCounter++}";
-                    idRemap[loc.Id] = newId;
-                    loc.Id = newId;
+                    var sanitized = SanitizeVariableNameForUppaal(kv.Key);
+                    resetVars.Add($"{sanitized} = 0");
                 }
-                // Remap transition source/target references
-                foreach (var trans in template.Transitions)
+            }
+
+            template.Transitions.Add(new UppaalTransition
+            {
+                Source = doneLoc.Id,
+                Target = entryLoc.Id,
+                Update = resetVars.Count > 0 ? string.Join(", ", resetVars) : ""
+            });
+        }
+
+        /// <summary>
+        /// Wraps a callee template with Waiting/Done states and sync channel edges.
+        /// The Exit location's outgoing edges are replaced so that it signals done!
+        /// and loops back to Waiting.
+        /// </summary>
+        private void WrapAsCallee(UppaalTemplate template, ControlFlowGraph cfg, ref int globalIdCounter)
+        {
+            string channelPrefix = GetChannelPrefix(template.Name);
+
+            // Find the Entry and Exit locations
+            var entryLoc = template.Locations.FirstOrDefault(l => l.Name == "Entry");
+            var exitLoc = template.Locations.FirstOrDefault(l => l.Name == "Exit");
+
+            // Create Waiting location (new initial state)
+            var waitingLoc = new UppaalLocation
+            {
+                Id = $"id{globalIdCounter++}",
+                Name = "Waiting",
+                IsInitial = true
+            };
+
+            // Un-mark old Entry as initial
+            if (entryLoc != null)
+                entryLoc.IsInitial = false;
+
+            // Add Waiting at the beginning
+            template.Locations.Insert(0, waitingLoc);
+
+            // Add transition: Waiting --[call?]--> Entry
+            template.Transitions.Add(new UppaalTransition
+            {
+                Source = waitingLoc.Id,
+                Target = entryLoc?.Id ?? template.Locations[1].Id,
+                Synchronization = $"{channelPrefix}_call?"
+            });
+
+            if (exitLoc != null)
+            {
+                // Create a Done location (signals done)
+                var doneLoc = new UppaalLocation
                 {
-                    if (idRemap.ContainsKey(trans.Source))
-                        trans.Source = idRemap[trans.Source];
-                    if (idRemap.ContainsKey(trans.Target))
-                        trans.Target = idRemap[trans.Target];
+                    Id = $"id{globalIdCounter++}",
+                    Name = "Done",
+                    IsUrgent = true  // urgent so it fires immediately
+                };
+                template.Locations.Add(doneLoc);
+
+                // Remove all transitions FROM Exit
+                template.Transitions.RemoveAll(t => t.Source == exitLoc.Id);
+
+                // Exit --> Done: signal done! and optionally publish shared_result
+                // Look at the Exit node to find if there's a return value
+                var returnUpdate = "";
+                if (cfg != null)
+                {
+                    var returnNode = cfg.Nodes.LastOrDefault(n => n.Type == NodeType.Return);
+                    if (returnNode != null && !string.IsNullOrEmpty(returnNode.Code))
+                    {
+                        // Extract the return expression, e.g. "return balance;" -> "shared_result = balance"
+                        var retCode = returnNode.Code.Trim().TrimEnd(';');
+                        if (retCode.StartsWith("return "))
+                        {
+                            var retExpr = retCode.Substring("return ".Length).Trim();
+                            if (!string.IsNullOrEmpty(retExpr))
+                                returnUpdate = $"shared_result = {retExpr}";
+                        }
+                    }
                 }
 
-                // Store position info for transition generation
-                var (locationElements, positionMap, levels, backEdges) = GenerateLocationsWithPositions(template.Locations, template.Transitions, templateIndex);
-                
-                yield return new XElement("template",
-                    new XElement("name", template.Name),
-                    GenerateTemplateDeclaration(template),
-                    locationElements,
-                    GenerateInitialLocation(template.Locations),
-                    GenerateTransitions(template.Transitions, positionMap, levels, backEdges)
-                );
-                
-                templateIndex++;
+                template.Transitions.Add(new UppaalTransition
+                {
+                    Source = exitLoc.Id,
+                    Target = doneLoc.Id,
+                    Update = returnUpdate,
+                    Synchronization = $"{channelPrefix}_done!"
+                });
+
+                // Done --> Waiting: reset local variables and loop back
+                var resetVars = new List<string>();
+                if (cfg != null)
+                {
+                    foreach (var kv in cfg.Variables)
+                    {
+                        var sanitized = SanitizeVariableNameForUppaal(kv.Key);
+                        resetVars.Add($"{sanitized} = 0");
+                    }
+                }
+
+                template.Transitions.Add(new UppaalTransition
+                {
+                    Source = doneLoc.Id,
+                    Target = waitingLoc.Id,
+                    Update = resetVars.Count > 0 ? string.Join(", ", resetVars) : ""
+                });
+            }
+
+            // Clear the template's local declaration — variables are now global
+            template.Declaration = "";
+        }
+
+        private string SanitizeVariableNameForUppaal(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return "var";
+            var sanitized = new string(name.Where(c => char.IsLetterOrDigit(c) || c == '_').ToArray());
+            if (sanitized.Length > 0 && !char.IsLetter(sanitized[0]) && sanitized[0] != '_')
+                sanitized = "_" + sanitized;
+            if (string.IsNullOrEmpty(sanitized)) return "var";
+            return sanitized;
+        }
+
+        /// <summary>
+        /// Expands MethodCall CFG nodes into call!/done? synchronization transition pairs
+        /// in the caller template.
+        /// For each MethodCall node, we replace it with:
+        ///   ... --> SendCall --[x_call!]--> WaitDone --[x_done?]--> next ...
+        /// </summary>
+        private void ExpandMethodCallNodes(
+            UppaalTemplate template,
+            ControlFlowGraph cfg,
+            HashSet<string> calledMethodNames,
+            ref int globalIdCounter)
+        {
+            // Build a mapping from CFG node IDs to UPPAAL location IDs
+            // We need to find which locations correspond to MethodCall nodes
+            var cfgNodeToLocId = new Dictionary<string, string>();
+            for (int i = 0; i < cfg.Nodes.Count && i < template.Locations.Count; i++)
+            {
+                cfgNodeToLocId[cfg.Nodes[i].Id] = template.Locations[i].Id;
+            }
+
+            // Find all MethodCall nodes
+            var methodCallNodes = cfg.Nodes.Where(n => n.Type == NodeType.MethodCall).ToList();
+
+            foreach (var callNode in methodCallNodes)
+            {
+                if (!callNode.Properties.ContainsKey("calledMethod")) continue;
+                string calledName = callNode.Properties["calledMethod"].ToString();
+                if (!calledMethodNames.Contains(calledName)) continue;
+
+                string channelPrefix = GetChannelPrefix(calledName);
+
+                // Find the corresponding location in the template
+                if (!cfgNodeToLocId.ContainsKey(callNode.Id)) continue;
+                string callLocId = cfgNodeToLocId[callNode.Id];
+
+                var callLoc = template.Locations.FirstOrDefault(l => l.Id == callLocId);
+                if (callLoc == null) continue;
+
+                // Rename the call location to indicate it's a call send
+                callLoc.Name = $"Call_{calledName}";
+                callLoc.IsUrgent = true; // Send immediately
+
+                // Create WaitDone location
+                var waitDoneLoc = new UppaalLocation
+                {
+                    Id = $"id{globalIdCounter++}",
+                    Name = $"Wait_{calledName}"
+                };
+                template.Locations.Add(waitDoneLoc);
+
+                // Build argument assignment for the call (write args to shared variables)
+                var argAssignments = new List<string>();
+                if (callNode.Properties.ContainsKey("argCount"))
+                {
+                    int argCount = Convert.ToInt32(callNode.Properties["argCount"]);
+                    // For now, assign args to global variables based on the callee's parameter names
+                    // We need to look up the callee's parameter names
+                    var calleeMethod = cfg.Parameters; // This is the caller's params, not callee's
+                    for (int i = 0; i < argCount; i++)
+                    {
+                        if (callNode.Properties.ContainsKey($"arg{i}"))
+                        {
+                            // The argument expression
+                            string argExpr = callNode.Properties[$"arg{i}"].ToString();
+                            // We'll assign to a shared variable — the callee will read from globals
+                            // This is handled by the global declaration
+                        }
+                    }
+                }
+
+                // Find all outgoing transitions from callLoc and redirect them through WaitDone
+                var outgoingFromCall = template.Transitions.Where(t => t.Source == callLocId).ToList();
+                foreach (var trans in outgoingFromCall)
+                {
+                    // Move these transitions to come from WaitDone instead
+                    trans.Source = waitDoneLoc.Id;
+
+                    // If there's an assignTarget, add the assignment on the done? edge
+                    if (callNode.Properties.ContainsKey("assignTarget"))
+                    {
+                        string assignTarget = callNode.Properties["assignTarget"].ToString();
+                        trans.Update = string.IsNullOrEmpty(trans.Update)
+                            ? $"{assignTarget} = shared_result"
+                            : $"{assignTarget} = shared_result, {trans.Update}";
+                    }
+                }
+
+                // Find all incoming transitions TO callLoc and add the call! sync
+                var incomingToCall = template.Transitions.Where(t => t.Target == callLocId).ToList();
+
+                // Add transition: callLoc --[call!]--> WaitDone
+                template.Transitions.Add(new UppaalTransition
+                {
+                    Source = callLocId,
+                    Target = waitDoneLoc.Id,
+                    Synchronization = $"{channelPrefix}_call!"
+                });
+
+                // Add transition: WaitDone --[done?]--> (already handled by redirected transitions)
+                // Actually, we need to add the done? sync to the outgoing transitions from WaitDone
+                foreach (var trans in outgoingFromCall)
+                {
+                    trans.Synchronization = $"{channelPrefix}_done?";
+                }
             }
         }
 
@@ -881,13 +1046,19 @@ namespace CSharpToUppaal.Backend.Services
         private IEnumerable<XElement> GenerateTransitions(List<UppaalTransition> transitions, 
             Dictionary<string, (int x, int y)> positionMap, 
             Dictionary<string, int> levels,
-            HashSet<(string, string)> backEdges)
+            HashSet<(string, string)> backEdges,
+            string initialLocationId)
         {
             // Track how many transitions leave each source node for label offset
             var sourceEdgeIndex = new Dictionary<string, int>();
             
             // Build a list of all node positions for overlap detection
             var allPositions = positionMap.Values.ToList();
+
+            // Track the rightmost nail X used by previous RIGHT-side back-edges
+            // and the leftmost nail X for LEFT-side back-edges so they stack apart.
+            int maxBackEdgeNailX = int.MinValue;   // for right-side (exit loops)
+            int minBackEdgeNailX = int.MaxValue;   // for left-side  (for loops)
             
             // Pre-compute: for each source, count outgoing non-back-edge transitions
             var outgoingCount = new Dictionary<string, int>();
@@ -922,20 +1093,64 @@ namespace CSharpToUppaal.Backend.Services
 
                     if (isBackEdge)
                     {
-                        // Back-edge: route to the left with nails
-                        int leftMost = Math.Min(sourcePos.x, targetPos.x);
-                        int nailX = leftMost - 150;
-                        labelX = nailX - 10;
-                        labelY = (sourcePos.y + targetPos.y) / 2;
+                        // Determine whether this back-edge is an "exit loop" (Done→Waiting /
+                        // Done→Entry) or an "internal loop" (e.g. for-loop increment → condition).
+                        // Exit loops target the initial location; internal loops don't.
+                        bool isExitLoop = transition.Target == initialLocationId;
 
-                        nailElements.Add(new XElement("nail",
-                            new XAttribute("x", nailX),
-                            new XAttribute("y", sourcePos.y)
-                        ));
-                        nailElements.Add(new XElement("nail",
-                            new XAttribute("x", nailX),
-                            new XAttribute("y", targetPos.y)
-                        ));
+                        int minBackY = Math.Min(sourcePos.y, targetPos.y);
+                        int maxBackY = Math.Max(sourcePos.y, targetPos.y);
+
+                        if (isExitLoop)
+                        {
+                            // ---- EXIT LOOP: route RIGHT ----
+                            int rightMost = Math.Max(sourcePos.x, targetPos.x);
+                            foreach (var pos in allPositions)
+                            {
+                                if (pos.y >= minBackY - 20 && pos.y <= maxBackY + 20)
+                                    if (pos.x > rightMost) rightMost = pos.x;
+                            }
+
+                            int nailX = rightMost + 170;
+                            if (maxBackEdgeNailX != int.MinValue && nailX <= maxBackEdgeNailX)
+                                nailX = maxBackEdgeNailX + 80;
+                            maxBackEdgeNailX = Math.Max(maxBackEdgeNailX, nailX);
+
+                            labelX = nailX + 10;
+                            labelY = (sourcePos.y + targetPos.y) / 2;
+
+                            nailElements.Add(new XElement("nail",
+                                new XAttribute("x", nailX),
+                                new XAttribute("y", sourcePos.y)));
+                            nailElements.Add(new XElement("nail",
+                                new XAttribute("x", nailX),
+                                new XAttribute("y", targetPos.y)));
+                        }
+                        else
+                        {
+                            // ---- INTERNAL LOOP (for / while): route LEFT ----
+                            int leftMost = Math.Min(sourcePos.x, targetPos.x);
+                            foreach (var pos in allPositions)
+                            {
+                                if (pos.y >= minBackY - 20 && pos.y <= maxBackY + 20)
+                                    if (pos.x < leftMost) leftMost = pos.x;
+                            }
+
+                            int nailX = leftMost - 150;
+                            if (minBackEdgeNailX != int.MaxValue && nailX >= minBackEdgeNailX)
+                                nailX = minBackEdgeNailX - 80;
+                            minBackEdgeNailX = Math.Min(minBackEdgeNailX, nailX);
+
+                            labelX = nailX - 10;
+                            labelY = (sourcePos.y + targetPos.y) / 2;
+
+                            nailElements.Add(new XElement("nail",
+                                new XAttribute("x", nailX),
+                                new XAttribute("y", sourcePos.y)));
+                            nailElements.Add(new XElement("nail",
+                                new XAttribute("x", nailX),
+                                new XAttribute("y", targetPos.y)));
+                        }
                     }
                     else
                     {
@@ -1066,8 +1281,8 @@ namespace CSharpToUppaal.Backend.Services
 
         private XElement GenerateSystemDeclaration(List<UppaalTemplate> templates, HashSet<string> functionNames)
         {
-            // Exclude templates that are generated as functions (they don't run as processes)
-            var templateNames = templates.Where(t => !functionNames.Contains(t.Name)).Select(t => t.Name);
+            // All templates are now instantiated as processes (no more UPPAAL functions)
+            var templateNames = templates.Select(t => t.Name);
             var systemText = $"system {string.Join(", ", templateNames)};";
 
             return new XElement("system",

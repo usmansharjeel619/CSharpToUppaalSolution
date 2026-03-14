@@ -172,6 +172,17 @@ namespace CSharpToUppaal.Backend.Generators
             return cfgs;
         }
 
+        private HashSet<string> _knownMethodNames = new();
+
+        /// <summary>
+        /// Sets the known method names so that method calls to sibling methods
+        /// can be detected and represented as MethodCall CFG nodes.
+        /// </summary>
+        public void SetKnownMethodNames(IEnumerable<string> names)
+        {
+            _knownMethodNames = new HashSet<string>(names);
+        }
+
         private async Task<string> ProcessBlockAsync(BlockSyntax block, ControlFlowGraph cfg, string previousNodeId)
         {
             string currentNodeId = previousNodeId;
@@ -444,37 +455,152 @@ namespace CSharpToUppaal.Backend.Generators
 
         private string ProcessExpressionStatement(ExpressionStatementSyntax exprStmt, ControlFlowGraph cfg, string previousNodeId)
         {
-            var node = new CfgNode
+            // Check if this expression is a method call to a known sibling method
+            if (exprStmt.Expression is InvocationExpressionSyntax invocation)
+            {
+                string calledName = null;
+                if (invocation.Expression is IdentifierNameSyntax id)
+                    calledName = id.Identifier.Text;
+                else if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+                    calledName = memberAccess.Name.Identifier.Text;
+
+                if (calledName != null && _knownMethodNames.Contains(calledName))
+                {
+                    var node = new CfgNode
+                    {
+                        Label = $"Call {calledName}",
+                        Type = NodeType.MethodCall,
+                        Code = exprStmt.Expression.ToString()
+                    };
+                    node.Properties["calledMethod"] = calledName;
+                    // Store argument expressions for shared variable passing
+                    var args = invocation.ArgumentList.Arguments;
+                    for (int i = 0; i < args.Count; i++)
+                    {
+                        node.Properties[$"arg{i}"] = args[i].Expression.ToString();
+                    }
+                    node.Properties["argCount"] = args.Count;
+                    cfg.Nodes.Add(node);
+                    AddEdge(cfg, previousNodeId, node.Id);
+                    return node.Id;
+                }
+            }
+
+            // Check if this is an assignment whose RHS is a method call to a known sibling method
+            if (exprStmt.Expression is AssignmentExpressionSyntax assignment &&
+                assignment.Right is InvocationExpressionSyntax rhsInvocation)
+            {
+                string calledName = null;
+                if (rhsInvocation.Expression is IdentifierNameSyntax rhsId)
+                    calledName = rhsId.Identifier.Text;
+                else if (rhsInvocation.Expression is MemberAccessExpressionSyntax rhsMemberAccess)
+                    calledName = rhsMemberAccess.Name.Identifier.Text;
+
+                if (calledName != null && _knownMethodNames.Contains(calledName))
+                {
+                    var node = new CfgNode
+                    {
+                        Label = $"Call {calledName}",
+                        Type = NodeType.MethodCall,
+                        Code = exprStmt.Expression.ToString()
+                    };
+                    node.Properties["calledMethod"] = calledName;
+                    node.Properties["assignTarget"] = assignment.Left.ToString();
+                    var args = rhsInvocation.ArgumentList.Arguments;
+                    for (int i = 0; i < args.Count; i++)
+                    {
+                        node.Properties[$"arg{i}"] = args[i].Expression.ToString();
+                    }
+                    node.Properties["argCount"] = args.Count;
+                    cfg.Nodes.Add(node);
+                    AddEdge(cfg, previousNodeId, node.Id);
+                    return node.Id;
+                }
+            }
+
+            var exprNode = new CfgNode
             {
                 Label = "Expression",
                 Type = NodeType.Statement,
                 Code = exprStmt.Expression.ToString()
             };
-            cfg.Nodes.Add(node);
-            AddEdge(cfg, previousNodeId, node.Id);
-            return node.Id;
+            cfg.Nodes.Add(exprNode);
+            AddEdge(cfg, previousNodeId, exprNode.Id);
+            return exprNode.Id;
         }
 
         private string ProcessLocalDeclaration(LocalDeclarationStatementSyntax localDecl, ControlFlowGraph cfg, string previousNodeId)
         {
-            var node = new CfgNode
-            {
-                Label = "Declaration",
-                Type = NodeType.Declaration,
-                Code = localDecl.ToString()
-            };
-            cfg.Nodes.Add(node);
-            AddEdge(cfg, previousNodeId, node.Id);
-
-            // Extract variable names and types for UPPAAL declarations
+            // Check if the initializer is a method call to a known sibling method
             var declaration = localDecl.Declaration;
             string typeName = declaration.Type.ToString();
+            
             foreach (var variable in declaration.Variables)
             {
                 cfg.Variables[variable.Identifier.Text] = typeName;
+
+                if (variable.Initializer?.Value is InvocationExpressionSyntax invocation)
+                {
+                    string calledName = null;
+                    if (invocation.Expression is IdentifierNameSyntax id)
+                        calledName = id.Identifier.Text;
+                    else if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+                        calledName = memberAccess.Name.Identifier.Text;
+
+                    if (calledName != null && _knownMethodNames.Contains(calledName))
+                    {
+                        var callNode = new CfgNode
+                        {
+                            Label = $"Call {calledName}",
+                            Type = NodeType.MethodCall,
+                            Code = $"{variable.Identifier.Text} = {invocation}"
+                        };
+                        callNode.Properties["calledMethod"] = calledName;
+                        callNode.Properties["assignTarget"] = variable.Identifier.Text;
+                        var args = invocation.ArgumentList.Arguments;
+                        for (int i = 0; i < args.Count; i++)
+                        {
+                            callNode.Properties[$"arg{i}"] = args[i].Expression.ToString();
+                        }
+                        callNode.Properties["argCount"] = args.Count;
+                        cfg.Nodes.Add(callNode);
+                        AddEdge(cfg, previousNodeId, callNode.Id);
+                        previousNodeId = callNode.Id;
+                        continue; // skip the normal declaration node for this variable
+                    }
+                }
             }
 
-            return node.Id;
+            // If all variables were method calls, we've already handled them
+            // Only create a declaration node if there are non-method-call initializers
+            bool hasNonCallVars = false;
+            foreach (var variable in declaration.Variables)
+            {
+                if (variable.Initializer?.Value is InvocationExpressionSyntax inv2)
+                {
+                    string cn = null;
+                    if (inv2.Expression is IdentifierNameSyntax id2) cn = id2.Identifier.Text;
+                    else if (inv2.Expression is MemberAccessExpressionSyntax ma2) cn = ma2.Name.Identifier.Text;
+                    if (cn != null && _knownMethodNames.Contains(cn)) continue;
+                }
+                hasNonCallVars = true;
+                break;
+            }
+
+            if (hasNonCallVars)
+            {
+                var node = new CfgNode
+                {
+                    Label = "Declaration",
+                    Type = NodeType.Declaration,
+                    Code = localDecl.ToString()
+                };
+                cfg.Nodes.Add(node);
+                AddEdge(cfg, previousNodeId, node.Id);
+                return node.Id;
+            }
+
+            return previousNodeId;
         }
 
         private string ProcessGenericStatement(StatementSyntax statement, ControlFlowGraph cfg, string previousNodeId)
