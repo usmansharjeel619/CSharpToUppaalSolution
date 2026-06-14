@@ -4,13 +4,17 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         WindowStartupLocation="CenterOwner"
         SizeToContent="WidthAndHeight"
-        ResizeMode="NoResize">
-    <StackPanel Margin="20">
+        ResizeMode="NoResize"
+        Background="{StaticResource BackgroundBrush}"
+        Foreground="{StaticResource TextPrimaryBrush}">
+    <StackPanel Margin="20" Background="{StaticResource BackgroundBrush}">
         <TextBlock x:Name="PromptText" Margin="0,0,0,10"/>
         <TextBox x:Name="InputBox" MinWidth="200" Margin="0,0,0,10"/>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Content="OK" IsDefault="True" Click="OkButton_Click" Margin="0,0,10,0"/>
-            <Button Content="Cancel" IsCancel="True" Click="CancelButton_Click"/>
+            <Button Content="OK" IsDefault="True" Click="OkButton_Click" Margin="0,0,10,0"
+                    Style="{StaticResource MaterialDesignRaisedButton}"/>
+            <Button Content="Cancel" IsCancel="True" Click="CancelButton_Click"
+                    Style="{StaticResource MaterialDesignRaisedButton}"/>
         </StackPanel>
     </StackPanel>
 </Window>

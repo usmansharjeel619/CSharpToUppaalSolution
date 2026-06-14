@@ -9,6 +9,7 @@ using CSharpToUppaal.Backend.Parsers;
 using CSharpToUppaal.Backend.Services;
 using CSharpToUppaal.Backend.Verification;
 
+#nullable disable
 namespace CSharpToUppaal.Backend
 {
     public interface ICSharpToUppaalEngine
@@ -16,7 +17,9 @@ namespace CSharpToUppaal.Backend
         Task<Project> CreateProjectAsync(string name, string description = "");
         Task<SourceFile> AddSourceFileAsync(Project project, string filePath);
         Task<SourceFile> AddSourceCodeAsync(Project project, string code, string fileName = "Source.cs");
+        Task<CSharpSemanticAnalysisResult> AnalyzeSourceCodeAsync(string code, string fileName = "Source.cs");
         Task<UppaalModel> GenerateModelAsync(Project project, string modelName = null);
+        Task<UppaalModel> GenerateModelAsync(ModelGenerationRequest request);
         Task<VerificationSummary> VerifyModelAsync(UppaalModel model);
         Task<List<ControlFlowGraph>> GenerateCfgsAsync(Project project);
         Task<ControlFlowGraph> GenerateCfgForMethodAsync(MethodInfo method);
@@ -37,17 +40,20 @@ namespace CSharpToUppaal.Backend
         private readonly IUppaalGeneratorService _uppaalGenerator;
         private readonly IUppaalVerifier _verifier;
         private readonly IUppaalLayoutService _layoutService;
+        private readonly ICSharpSemanticAnalyzer _semanticAnalyzer;
 
         public CSharpToUppaalEngine(
             ICSharpParserService parser = null,
             ICfgGeneratorService cfgGenerator = null,
             IUppaalGeneratorService uppaalGenerator = null,
             IUppaalVerifier verifier = null,
-            IUppaalLayoutService layoutService = null)
+            IUppaalLayoutService layoutService = null,
+            ICSharpSemanticAnalyzer semanticAnalyzer = null)
         {
             _parser = parser ?? new CSharpParser();
             _cfgGenerator = cfgGenerator ?? new CfgGeneratorService(_parser);
-            _uppaalGenerator = uppaalGenerator ?? new UppaalGeneratorService(_cfgGenerator);
+            _semanticAnalyzer = semanticAnalyzer ?? new CSharpSemanticAnalyzer();
+            _uppaalGenerator = uppaalGenerator ?? new UppaalGeneratorService(_cfgGenerator, _semanticAnalyzer);
             _verifier = verifier ?? new UppaalVerifier();
             _layoutService = layoutService ?? new UppaalLayoutService();
         }
@@ -139,6 +145,11 @@ namespace CSharpToUppaal.Backend
             }
         }
 
+        public Task<CSharpSemanticAnalysisResult> AnalyzeSourceCodeAsync(string code, string fileName = "Source.cs")
+        {
+            return _semanticAnalyzer.AnalyzeSourceCodeAsync(code, fileName);
+        }
+
         public async Task<UppaalModel> GenerateModelAsync(Project project, string modelName = null)
         {
             try
@@ -158,6 +169,21 @@ namespace CSharpToUppaal.Backend
             catch (Exception ex)
             {
                 Console.WriteLine($"Error generating UPPAAL model for project {project.Name}: {ex.Message}");
+                throw;
+            }
+        }
+
+        public async Task<UppaalModel> GenerateModelAsync(ModelGenerationRequest request)
+        {
+            try
+            {
+                var model = await _uppaalGenerator.GenerateModelFromRequestAsync(request);
+                model.Name = request.ProjectName;
+                return model;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error generating UPPAAL model from request: {ex.Message}");
                 throw;
             }
         }
@@ -225,6 +251,15 @@ namespace CSharpToUppaal.Backend
             try
             {
                 Console.WriteLine($"Exporting UPPAAL model to: {filePath}");
+                var compatibility = new UppaalCompatibilityValidator().Validate(model.XmlContent);
+                if (!compatibility.IsReady)
+                {
+                    var errors = string.Join(Environment.NewLine, compatibility.Issues
+                        .Where(i => i.Severity == UppaalCompatibilitySeverity.Error)
+                        .Select(i => $"{i.Position}: {i.Message}"));
+                    throw new InvalidOperationException($"UPPAAL XML is not ready for export:{Environment.NewLine}{errors}");
+                }
+
                 await File.WriteAllTextAsync(filePath, model.XmlContent);
                 return filePath;
             }

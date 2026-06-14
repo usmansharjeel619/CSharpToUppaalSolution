@@ -7,6 +7,8 @@
         xmlns:vm="clr-namespace:CSharpToUppaal.GUI.ViewModels"
         xmlns:controls="clr-namespace:CSharpToUppaal.GUI.Controls"
         xmlns:converters="clr-namespace:CSharpToUppaal.GUI.Converters"
+        xmlns:models="clr-namespace:CSharpToUppaal.Backend.Models;assembly=CSharpToUppaal.Backend"
+        xmlns:sys="clr-namespace:System;assembly=System.Runtime"
         mc:Ignorable="d"
         Title="C# to UPPAAL Model Generator" 
         Height="900" Width="1600"
@@ -22,6 +24,13 @@
         <converters:NullToVisibilityConverter x:Key="NullToVis" />
         <converters:StatusToColorConverter x:Key="StatusToColor" />
         <converters:BoolToStringConverter x:Key="BoolToStringConverter" />
+        <ObjectDataProvider x:Key="FunctionModeValues"
+                            MethodName="GetValues"
+                            ObjectType="{x:Type sys:Enum}">
+            <ObjectDataProvider.MethodParameters>
+                <x:Type TypeName="models:FunctionModelingMode"/>
+            </ObjectDataProvider.MethodParameters>
+        </ObjectDataProvider>
         
         <!-- Button Style with White Foreground -->
         <Style x:Key="WhiteButtonStyle" TargetType="Button">
@@ -77,12 +86,10 @@
                           Margin="8,0"/>
 
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-                    <!-- Settings button hidden
                     <Button Content="Settings" 
                             Command="{Binding OpenSettingsCommand}"
                             Style="{StaticResource WhiteButtonStyle}"
                             Margin="8,0"/>
-                    -->
                     <Button Content="Clear All" 
                             Command="{Binding ClearAllCommand}"
                             Style="{StaticResource WhiteButtonStyle}"
@@ -102,6 +109,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="90"/>
                     </Grid.RowDefinitions>
 
                     <!-- Toolbar with white buttons -->
@@ -127,12 +135,63 @@
                 </Grid>
             </TabItem>
 
+            <!-- Function Selection Tab -->
+            <TabItem Header="Functions">
+                <Grid Background="{StaticResource BackgroundBrush}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0"
+                                Orientation="Horizontal"
+                                Background="{StaticResource PrimaryMidBrush}">
+                        <Button Content="Analyze Functions"
+                                Command="{Binding RunAnalysisCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                Margin="8"/>
+                        <TextBlock Text="{Binding GenerationReportText}"
+                                   Foreground="White"
+                                   VerticalAlignment="Center"
+                                   Margin="12,0"/>
+                    </StackPanel>
+
+                    <DataGrid Grid.Row="1"
+                              ItemsSource="{Binding FunctionSelections}"
+                              AutoGenerateColumns="False"
+                              CanUserAddRows="False"
+                              GridLinesVisibility="Horizontal"
+                              HeadersVisibility="Column">
+                        <DataGrid.Columns>
+                            <DataGridCheckBoxColumn Header="Use" Binding="{Binding IsSelected, Mode=TwoWay}" Width="60"/>
+                            <DataGridTextColumn Header="Function" Binding="{Binding Name}" Width="220" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Signature" Binding="{Binding Signature}" Width="280" IsReadOnly="True"/>
+                            <DataGridComboBoxColumn Header="Mode"
+                                                    SelectedItemBinding="{Binding Mode, Mode=TwoWay}"
+                                                    ItemsSource="{Binding Source={StaticResource FunctionModeValues}}"
+                                                    Width="150"/>
+                            <DataGridTextColumn Header="Return" Binding="{Binding ReturnType}" Width="100" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Parameters" Binding="{Binding Parameters}" Width="220" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Calls" Binding="{Binding DependencyCount}" Width="70" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Warnings" Binding="{Binding Warnings}" Width="*" IsReadOnly="True"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+
+                    <TextBlock Grid.Row="2"
+                               Text="{Binding SettingsSummary}"
+                               Foreground="White"
+                               Margin="10,6"/>
+                </Grid>
+            </TabItem>
+
             <!-- CFG Visualization Tab -->
             <TabItem Header="CFG Visualization">
                 <Grid Background="{StaticResource BackgroundBrush}">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="120"/>
                     </Grid.RowDefinitions>
 
                     <!-- Toolbar with white buttons -->
@@ -157,30 +216,23 @@
                                 DisplayMemberPath="Name" 
                                 Width="250"
                                 VerticalAlignment="Center"
-                                Background="White"
-                                Foreground="Black">
-                            <ComboBox.ItemContainerStyle>
-                                <Style TargetType="ComboBoxItem">
-                                    <Setter Property="Background" Value="White"/>
-                                    <Setter Property="Foreground" Value="Black"/>
-                                </Style>
-                            </ComboBox.ItemContainerStyle>
-                        </ComboBox>
+                                Background="{StaticResource SurfaceBrush}"
+                                Foreground="{StaticResource TextPrimaryBrush}"/>
                     </StackPanel>
 
                     <ScrollViewer Grid.Row="1" 
                                 HorizontalScrollBarVisibility="Auto" 
                                 VerticalScrollBarVisibility="Auto"
-                                Background="#F5F5F5">
-                        <Border Background="White" 
+                                Background="{StaticResource BackgroundBrush}">
+                        <Border Background="{StaticResource SurfaceBrush}" 
                                Margin="20" 
-                               BorderBrush="#CCCCCC" 
+                               BorderBrush="{StaticResource BorderBrush}" 
                                BorderThickness="1"
                                CornerRadius="4">
                             <Canvas x:Name="CfgCanvas" 
                                    Width="800" 
                                    Height="600" 
-                                   Background="White"/>
+                                   Background="{StaticResource SurfaceBrush}"/>
                         </Border>
                     </ScrollViewer>
                 </Grid>
@@ -206,6 +258,12 @@
                                 Command="{Binding ExportModelCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"/>
                         <Separator Margin="8,0" Background="White" Width="2"/>
+                        <TextBlock Text="{Binding ReadinessStatus}"
+                                 VerticalAlignment="Center"
+                                 Margin="8,0"
+                                 Foreground="{StaticResource TextPrimaryBrush}"
+                                 FontWeight="SemiBold"/>
+                        <Separator Margin="8,0" Background="White" Width="2"/>
                         <TextBlock Text="Model Name:" 
                                  VerticalAlignment="Center" 
                                  Margin="8,0"
@@ -215,8 +273,8 @@
                                Width="200"
                                VerticalAlignment="Center"
                                Padding="6,4"
-                               Background="White"
-                               Foreground="Black"/>
+                               Background="{StaticResource SurfaceBrush}"
+                               Foreground="{StaticResource TextPrimaryBrush}"/>
                     </StackPanel>
 
                     <TabControl Grid.Row="1" 
@@ -232,87 +290,88 @@
                                    VerticalScrollBarVisibility="Auto"
                                    HorizontalScrollBarVisibility="Auto"
                                    IsReadOnly="{Binding IsXmlReadOnly}"
-                                   Background="White"
-                                   Foreground="Black"
+                                   Background="{StaticResource SurfaceBrush}"
+                                   Foreground="{StaticResource TextPrimaryBrush}"
                                    Padding="10"/>
                         </TabItem>
-                        <!-- Visual Preview - Temporarily Hidden -->
-                        <!--
-                        <TabItem Header="Visual Preview">
-                            <ScrollViewer Background="White" 
-                                        HorizontalScrollBarVisibility="Auto" 
-                                        VerticalScrollBarVisibility="Auto">
-                                <Border Background="White" 
-                                       Margin="20" 
-                                       BorderBrush="#CCCCCC" 
-                                       BorderThickness="1"
-                                       CornerRadius="4">
-                                    <Canvas x:Name="UppaalCanvas" 
-                                           Background="White"/>
-                                </Border>
-                            </ScrollViewer>
+                        <TabItem Header="Readiness">
+                            <Grid Background="{StaticResource BackgroundBrush}">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0"
+                                           Text="{Binding ReadinessStatus}"
+                                           Foreground="{StaticResource TextPrimaryBrush}"
+                                           FontWeight="SemiBold"
+                                           Margin="10,8"/>
+                                <DataGrid Grid.Row="1"
+                                          ItemsSource="{Binding CompatibilityIssues}"
+                                          AutoGenerateColumns="False"
+                                          CanUserAddRows="False"
+                                          IsReadOnly="True"
+                                          HeadersVisibility="Column"
+                                          Margin="8">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="100"/>
+                                        <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="150"/>
+                                        <DataGridTextColumn Header="Position" Binding="{Binding Position}" Width="260"/>
+                                        <DataGridTextColumn Header="Message" Binding="{Binding Message}" Width="*"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </Grid>
                         </TabItem>
-                        -->
                     </TabControl>
                 </Grid>
             </TabItem>
 
-            <!-- Verification Results Tab (hidden)
-            <TabItem Header="Verification">
+            <!-- Requirements Tab -->
+            <TabItem Header="Requirements">
                 <Grid Background="{StaticResource BackgroundBrush}">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="180"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <StackPanel Grid.Row="0" 
-                               Orientation="Horizontal" 
-                               Background="{StaticResource PrimaryMidBrush}"
-                               >
-                        <Button Content="Run Verification" 
-                                Command="{Binding RunVerificationCommand}"
-                                Style="{StaticResource WhiteButtonStyle}"/>
-                        <Button Content="Clear Results" 
-                                Command="{Binding ClearVerificationCommand}"
-                                Style="{StaticResource WhiteButtonStyle}"/>
-                        <Separator Margin="8,0" Background="White" Width="2"/>
-                        <TextBlock Text="Status:" 
-                                 VerticalAlignment="Center" 
-                                 Margin="8,0"
-                                 Foreground="White"
-                                 FontWeight="SemiBold"/>
-                        <TextBlock Text="{Binding VerificationStatus}" 
-                                 VerticalAlignment="Center" 
-                                 FontWeight="Bold" 
-                                 Margin="8,0"
-                                 Foreground="#FFD700"/>
+                    <StackPanel Grid.Row="0"
+                                Orientation="Horizontal"
+                                Background="{StaticResource PrimaryMidBrush}">
+                        <Button Content="Interpret Requirements"
+                                Command="{Binding InterpretRequirementsCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                Margin="8"/>
                     </StackPanel>
 
-                    <DataGrid Grid.Row="1" 
-                            ItemsSource="{Binding VerificationResults}"
-                            AutoGenerateColumns="False" 
-                            IsReadOnly="True"
-                            Background="White"
-                            Foreground="Black"
-                            AlternatingRowBackground="#F9F9F9"
-                            GridLinesVisibility="Horizontal"
-                            HeadersVisibility="Column">
+                    <TextBox Grid.Row="1"
+                             FontFamily="Consolas"
+                             FontSize="13"
+                             Text="{Binding RequirementsText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             AcceptsReturn="True"
+                             VerticalScrollBarVisibility="Auto"
+                             HorizontalScrollBarVisibility="Auto"
+                             Background="{StaticResource SurfaceBrush}"
+                             Foreground="{StaticResource TextPrimaryBrush}"
+                             Padding="10"
+                             Margin="8"/>
+
+                    <DataGrid Grid.Row="2"
+                              ItemsSource="{Binding GeneratedQueries}"
+                              AutoGenerateColumns="False"
+                              CanUserAddRows="False"
+                              GridLinesVisibility="Horizontal"
+                              HeadersVisibility="Column"
+                              Margin="8">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Property" Binding="{Binding Name}" Width="150"/>
-                            <DataGridTextColumn Header="Formula" Binding="{Binding Formula}" Width="300"/>
-                            <DataGridCheckBoxColumn Header="Verified" Binding="{Binding IsVerified}" Width="80"/>
-                            <DataGridTextColumn Header="Result" Binding="{Binding Result}" Width="200"/>
-                            <DataGridTextColumn Header="Time" Width="80">
-                                <DataGridTextColumn.Binding>
-                                    <Binding Path="VerificationTime" StringFormat="{}{0:mm\\:ss\\.fff}"/>
-                                </DataGridTextColumn.Binding>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Header="Error" Binding="{Binding ErrorMessage}" Width="*"/>
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="170"/>
+                            <DataGridTextColumn Header="Formula" Binding="{Binding Formula}" Width="360"/>
+                            <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="90" IsReadOnly="True"/>
+                            <DataGridCheckBoxColumn Header="Valid" Binding="{Binding IsValidated}" Width="70" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Comment" Binding="{Binding Comment}" Width="*"/>
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
             </TabItem>
-            -->
 
             <!-- Analysis Results Tab -->
             <TabItem Header="Analysis">
@@ -341,25 +400,25 @@
                         <ListBox Grid.Column="0" 
                                ItemsSource="{Binding Methods}"
                                SelectedItem="{Binding SelectedMethod}"
-                               Background="White"
-                               Foreground="Black">
+                               Background="{StaticResource BackgroundBrush}"
+                               Foreground="{StaticResource TextPrimaryBrush}">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <StackPanel Margin="8">
                                         <TextBlock Text="{Binding Name}" 
                                                  FontWeight="Bold"
                                                  FontSize="14"
-                                                 Foreground="#2C3E50"/>
+                                                 Foreground="{StaticResource TextPrimaryBrush}"/>
                                         <TextBlock Text="{Binding ReturnType}" 
                                                  FontStyle="Italic"
-                                                 Foreground="#7F8C8D"/>
+                                                 Foreground="{StaticResource TextSecondaryBrush}"/>
                                         <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                                             <TextBlock Text="Complexity: " 
                                                      FontWeight="SemiBold"
-                                                     Foreground="#34495E"/>
+                                                     Foreground="{StaticResource TextSecondaryBrush}"/>
                                             <TextBlock Text="{Binding Complexity.CyclomaticComplexity}"
                                                      FontWeight="Bold"
-                                                     Foreground="#E74C3C"/>
+                                                     Foreground="{StaticResource TextPrimaryBrush}"/>
                                         </StackPanel>
                                     </StackPanel>
                                 </DataTemplate>
@@ -367,51 +426,94 @@
                         </ListBox>
 
                         <Border Grid.Column="1" 
-                              BorderBrush="#CCCCCC" 
+                              BorderBrush="{StaticResource BorderBrush}" 
                               BorderThickness="1,0,0,0"
-                              Background="White">
+                              Background="{StaticResource SurfaceBrush}">
                             <ScrollViewer>
                                 <StackPanel Margin="16" DataContext="{Binding SelectedMethod}">
                                     <TextBlock Text="Method Details" 
                                              FontSize="18" 
                                              FontWeight="Bold" 
                                              Margin="0,0,0,16"
-                                             Foreground="#2C3E50"/>
+                                             Foreground="{StaticResource TextPrimaryBrush}"/>
                                     <StackPanel>
                                         <TextBlock Margin="0,0,0,10">
                                             <Run Text="Name: " 
                                                  FontWeight="SemiBold" 
-                                                 Foreground="#34495E"/>
+                                                 Foreground="{StaticResource TextSecondaryBrush}"/>
                                             <Run Text="{Binding Name, Mode=OneWay}"
-                                                 Foreground="#2C3E50"/>
+                                                 Foreground="{StaticResource TextPrimaryBrush}"/>
                                         </TextBlock>
                                         <TextBlock Margin="0,0,0,10">
                                             <Run Text="Return Type: " 
                                                  FontWeight="SemiBold"
-                                                 Foreground="#34495E"/>
+                                                 Foreground="{StaticResource TextSecondaryBrush}"/>
                                             <Run Text="{Binding ReturnType, Mode=OneWay}"
-                                                 Foreground="#2C3E50"/>
+                                                 Foreground="{StaticResource TextPrimaryBrush}"/>
                                         </TextBlock>
                                         <TextBlock Margin="0,0,0,10">
                                             <Run Text="Cyclomatic Complexity: " 
                                                  FontWeight="SemiBold"
-                                                 Foreground="#34495E"/>
+                                                 Foreground="{StaticResource TextSecondaryBrush}"/>
                                             <Run Text="{Binding Complexity.CyclomaticComplexity, Mode=OneWay}"
                                                  FontWeight="Bold"
-                                                 Foreground="#E74C3C"/>
+                                                 Foreground="{StaticResource TextPrimaryBrush}"/>
                                         </TextBlock>
                                         <TextBlock Margin="0,0,0,10">
                                             <Run Text="Lines of Code: " 
                                                  FontWeight="SemiBold"
-                                                 Foreground="#34495E"/>
+                                                 Foreground="{StaticResource TextSecondaryBrush}"/>
                                             <Run Text="{Binding LinesOfCode, Mode=OneWay}"
-                                                 Foreground="#2C3E50"/>
+                                                 Foreground="{StaticResource TextPrimaryBrush}"/>
                                         </TextBlock>
                                     </StackPanel>
                                 </StackPanel>
                             </ScrollViewer>
                         </Border>
                     </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- Assumptions and Domains Tab -->
+            <TabItem Header="Assumptions">
+                <Grid Background="{StaticResource BackgroundBrush}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <GroupBox Grid.Row="0" Header="Translation Assumptions" Foreground="White" Margin="8">
+                        <DataGrid ItemsSource="{Binding Assumptions}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  GridLinesVisibility="Horizontal"
+                                  HeadersVisibility="Column">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="100" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="150" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Symbol" Binding="{Binding SymbolName}" Width="220" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Location" Binding="{Binding Location}" Width="220" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Message" Binding="{Binding Message}" Width="*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </GroupBox>
+
+                    <GroupBox Grid.Row="1" Header="Variable Domains" Foreground="White" Margin="8">
+                        <DataGrid ItemsSource="{Binding Domains}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  GridLinesVisibility="Horizontal"
+                                  HeadersVisibility="Column">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="260"/>
+                                <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="90"/>
+                                <DataGridTextColumn Header="Min" Binding="{Binding Min}" Width="80"/>
+                                <DataGridTextColumn Header="Max" Binding="{Binding Max}" Width="80"/>
+                                <DataGridCheckBoxColumn Header="Bool" Binding="{Binding IsBoolean}" Width="70"/>
+                                <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </GroupBox>
                 </Grid>
             </TabItem>
 
@@ -465,7 +567,7 @@
                                    AcceptsReturn="True" AcceptsTab="True"
                                    VerticalScrollBarVisibility="Auto"
                                    HorizontalScrollBarVisibility="Auto"
-                                   Background="White" Foreground="Black"
+                                   Background="{StaticResource SurfaceBrush}" Foreground="{StaticResource TextPrimaryBrush}"
                                    Padding="10" Margin="4"/>
                         </DockPanel>
 
@@ -488,10 +590,21 @@
                                    VerticalScrollBarVisibility="Auto"
                                    HorizontalScrollBarVisibility="Auto"
                                    IsReadOnly="True"
-                                   Background="#FAFAFA" Foreground="Black"
+                                   Background="{StaticResource SurfaceBrush}" Foreground="{StaticResource TextPrimaryBrush}"
                                    Padding="10" Margin="4"/>
                         </DockPanel>
                     </Grid>
+
+                    <TextBox Grid.Row="2"
+                             Text="{Binding LayoutReportText}"
+                             IsReadOnly="True"
+                             FontFamily="Consolas"
+                             FontSize="12"
+                             Background="{StaticResource SurfaceBrush}"
+                             Foreground="{StaticResource TextPrimaryBrush}"
+                             VerticalScrollBarVisibility="Auto"
+                             Margin="8"
+                             Padding="8"/>
                 </Grid>
             </TabItem>
         </TabControl>

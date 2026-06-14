@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Xml.Linq;
+using CSharpToUppaal.Backend.Models;
 
 namespace CSharpToUppaal.Backend.Services
 {
@@ -20,6 +21,7 @@ namespace CSharpToUppaal.Backend.Services
         /// and returns a new XML string with clean positions.
         /// </summary>
         string FixLayout(string uppaalXml);
+        LayoutFixResult FixLayoutWithReport(string uppaalXml);
     }
 
     public class UppaalLayoutService : IUppaalLayoutService
@@ -29,6 +31,11 @@ namespace CSharpToUppaal.Backend.Services
         // ────────────────────────────────────────────────────────────
 
         public string FixLayout(string uppaalXml)
+        {
+            return FixLayoutWithReport(uppaalXml).XmlContent;
+        }
+
+        public LayoutFixResult FixLayoutWithReport(string uppaalXml)
         {
             if (string.IsNullOrWhiteSpace(uppaalXml))
                 throw new ArgumentException("XML input is empty.");
@@ -40,26 +47,97 @@ namespace CSharpToUppaal.Backend.Services
             if (nta == null)
                 throw new InvalidOperationException("Root <nta> element not found.");
 
+            var result = new LayoutFixResult();
+
             // Process every <template>
             int templateIndex = 0;
             foreach (var templateEl in nta.Elements("template").ToList())
             {
                 RelayoutTemplate(templateEl, templateIndex);
+                result.Templates.Add(BuildTemplateReport(templateEl));
                 templateIndex++;
             }
 
             // Re-serialize, prepending the DOCTYPE
-            string result = doc.Declaration != null
+            string xml = doc.Declaration != null
                 ? doc.Declaration.ToString() + "\n"
                 : "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
 
             // Restore the original DOCTYPE if it was present
             string doctype = ExtractDoctype(uppaalXml);
             if (!string.IsNullOrEmpty(doctype))
-                result += doctype + "\n";
+                xml += doctype + "\n";
 
-            result += doc.Root!.ToString();
+            xml += doc.Root!.ToString();
+            result.XmlContent = xml;
+            result.ReportText = BuildReportText(result);
             return result;
+        }
+
+        private static string BuildReportText(LayoutFixResult result)
+        {
+            if (result.Templates.Count == 0)
+                return "No templates found.";
+
+            return string.Join(Environment.NewLine, result.Templates.Select(t =>
+                $"{t.TemplateName}: {t.LocationCount} locations, {t.TransitionCount} transitions, {t.UnreachableLocationCount} unreachable locations, {t.EdgeCrossingCount} edge crossing(s), {t.RemovedLocations.Count} removed locations."));
+        }
+
+        private static LayoutTemplateReport BuildTemplateReport(XElement templateEl)
+        {
+            var name = templateEl.Element("name")?.Value ?? "Template";
+            var locations = templateEl.Elements("location").ToList();
+            var transitions = templateEl.Elements("transition").ToList();
+            var initId = templateEl.Element("init")?.Attribute("ref")?.Value
+                      ?? locations.FirstOrDefault()?.Attribute("id")?.Value
+                      ?? string.Empty;
+
+            var reachable = new HashSet<string>();
+            var outgoing = transitions
+                .Select(t => new
+                {
+                    Source = t.Element("source")?.Attribute("ref")?.Value ?? string.Empty,
+                    Target = t.Element("target")?.Attribute("ref")?.Value ?? string.Empty
+                })
+                .GroupBy(t => t.Source)
+                .ToDictionary(g => g.Key, g => g.Select(t => t.Target).Where(id => !string.IsNullOrWhiteSpace(id)).ToList());
+
+            var queue = new Queue<string>();
+            if (!string.IsNullOrWhiteSpace(initId))
+                queue.Enqueue(initId);
+
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                if (!reachable.Add(current))
+                    continue;
+
+                if (!outgoing.TryGetValue(current, out var targets))
+                    continue;
+
+                foreach (var target in targets)
+                    queue.Enqueue(target);
+            }
+
+            var unreachable = locations
+                .Select(l => l.Element("name")?.Value ?? l.Attribute("id")?.Value ?? string.Empty)
+                .Where((_, index) =>
+                {
+                    var id = locations[index].Attribute("id")?.Value ?? string.Empty;
+                    return !reachable.Contains(id);
+                })
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .ToList();
+
+            return new LayoutTemplateReport
+            {
+                TemplateName = name,
+                LocationCount = locations.Count,
+                TransitionCount = transitions.Count,
+                UnreachableLocationCount = unreachable.Count,
+                EdgeCrossingCount = CountEdgeCrossings(templateEl),
+                UnreachableLocations = unreachable
+            };
         }
 
         // ────────────────────────────────────────────────────────────
@@ -136,9 +214,9 @@ namespace CSharpToUppaal.Backend.Services
             }
 
             // ── 3.  Assign levels (Y) via longest-path DAG ────────
-            const int verticalSpacing = 100;
-            const int horizontalSpacing = 170;
-            const int startY = -200;
+            const int verticalSpacing = 150;
+            const int horizontalSpacing = 260;
+            const int startY = 80;
 
             var levels = new Dictionary<string, int>();
             {
@@ -262,8 +340,9 @@ namespace CSharpToUppaal.Backend.Services
                 var nameEl = loc.Element("name");
                 if (nameEl != null)
                 {
-                    nameEl.SetAttributeValue("x", x - 45);
-                    nameEl.SetAttributeValue("y", y - 35);
+                    var text = nameEl.Value ?? string.Empty;
+                    nameEl.SetAttributeValue("x", x - Math.Max(12, text.Length * 3));
+                    nameEl.SetAttributeValue("y", y - 7);
                 }
 
                 // Update invariant label position if present
@@ -408,6 +487,112 @@ namespace CSharpToUppaal.Backend.Services
         // ────────────────────────────────────────────────────────────
         //  HELPERS
         // ────────────────────────────────────────────────────────────
+
+        private static int CountEdgeCrossings(XElement templateEl)
+        {
+            var locations = templateEl.Elements("location")
+                .Select(l => new
+                {
+                    Id = l.Attribute("id")?.Value ?? string.Empty,
+                    X = ReadInt(l.Attribute("x")?.Value),
+                    Y = ReadInt(l.Attribute("y")?.Value)
+                })
+                .Where(l => !string.IsNullOrWhiteSpace(l.Id))
+                .ToDictionary(l => l.Id, l => (l.X, l.Y), StringComparer.Ordinal);
+
+            var polylines = templateEl.Elements("transition")
+                .Select(t =>
+                {
+                    var source = t.Element("source")?.Attribute("ref")?.Value ?? string.Empty;
+                    var target = t.Element("target")?.Attribute("ref")?.Value ?? string.Empty;
+                    if (!locations.TryGetValue(source, out var src) || !locations.TryGetValue(target, out var tgt))
+                        return null;
+
+                    var points = new List<(int x, int y)> { src };
+                    points.AddRange(t.Elements("nail").Select(n => (ReadInt(n.Attribute("x")?.Value), ReadInt(n.Attribute("y")?.Value))));
+                    points.Add(tgt);
+                    return new TransitionPolyline(source, target, points);
+                })
+                .Where(p => p != null)
+                .Cast<TransitionPolyline>()
+                .ToList();
+
+            var crossings = 0;
+            for (var i = 0; i < polylines.Count; i++)
+            {
+                for (var j = i + 1; j < polylines.Count; j++)
+                {
+                    if (SharesEndpoint(polylines[i], polylines[j]))
+                        continue;
+
+                    if (PolylinesIntersect(polylines[i].Points, polylines[j].Points))
+                        crossings++;
+                }
+            }
+
+            return crossings;
+        }
+
+        private sealed record TransitionPolyline(string Source, string Target, List<(int x, int y)> Points);
+
+        private static bool SharesEndpoint(TransitionPolyline first, TransitionPolyline second)
+        {
+            return first.Source == second.Source
+                || first.Source == second.Target
+                || first.Target == second.Source
+                || first.Target == second.Target;
+        }
+
+        private static bool PolylinesIntersect(IReadOnlyList<(int x, int y)> first, IReadOnlyList<(int x, int y)> second)
+        {
+            for (var i = 0; i < first.Count - 1; i++)
+            {
+                for (var j = 0; j < second.Count - 1; j++)
+                {
+                    if (SegmentsIntersect(first[i], first[i + 1], second[j], second[j + 1]))
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool SegmentsIntersect((int x, int y) p1, (int x, int y) q1, (int x, int y) p2, (int x, int y) q2)
+        {
+            var o1 = Orientation(p1, q1, p2);
+            var o2 = Orientation(p1, q1, q2);
+            var o3 = Orientation(p2, q2, p1);
+            var o4 = Orientation(p2, q2, q1);
+
+            if (o1 != o2 && o3 != o4)
+                return true;
+
+            return o1 == 0 && OnSegment(p1, p2, q1)
+                || o2 == 0 && OnSegment(p1, q2, q1)
+                || o3 == 0 && OnSegment(p2, p1, q2)
+                || o4 == 0 && OnSegment(p2, q1, q2);
+        }
+
+        private static int Orientation((int x, int y) p, (int x, int y) q, (int x, int y) r)
+        {
+            var value = (long)(q.y - p.y) * (r.x - q.x) - (long)(q.x - p.x) * (r.y - q.y);
+            if (value == 0)
+                return 0;
+            return value > 0 ? 1 : 2;
+        }
+
+        private static bool OnSegment((int x, int y) p, (int x, int y) q, (int x, int y) r)
+        {
+            return q.x <= Math.Max(p.x, r.x)
+                && q.x >= Math.Min(p.x, r.x)
+                && q.y <= Math.Max(p.y, r.y)
+                && q.y >= Math.Min(p.y, r.y);
+        }
+
+        private static int ReadInt(string? value)
+        {
+            return int.TryParse(value, out var parsed) ? parsed : 0;
+        }
 
         private static XElement Nail(int x, int y)
             => new XElement("nail", new XAttribute("x", x), new XAttribute("y", y));

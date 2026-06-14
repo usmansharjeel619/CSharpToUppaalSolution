@@ -139,6 +139,13 @@ namespace CSharpToUppaal.Backend.Models
         public string Synchronization { get; set; } = string.Empty;
         public string Update { get; set; } = string.Empty;
         public List<string> Comments { get; set; } = new();
+        public List<UppaalNail> Nails { get; set; } = new();
+    }
+
+    public class UppaalNail
+    {
+        public int X { get; set; }
+        public int Y { get; set; }
     }
 
     public class UppaalTemplate
@@ -160,6 +167,7 @@ namespace CSharpToUppaal.Backend.Models
         public List<UppaalTemplate> Templates { get; set; } = new();
         public List<MethodInfo> ParsedMethods { get; set; } = new();
         public VerificationSummary VerificationSummary { get; set; } = new();
+        public GenerationReport GenerationReport { get; set; } = new();
     }
 
     public enum ModelGenerationStatus
@@ -213,5 +221,204 @@ namespace CSharpToUppaal.Backend.Models
         public string Language { get; set; } = string.Empty;
         public List<MethodInfo> Methods { get; set; } = new();
         public List<ClassInfo> Classes { get; set; } = new();
+    }
+
+    public enum FunctionModelingMode
+    {
+        ExplicitAutomaton,
+        CodeBlock,
+        Stub
+    }
+
+    public enum AssumptionSeverity
+    {
+        Info,
+        Warning,
+        Error
+    }
+
+    public enum RequirementKind
+    {
+        Unknown,
+        Reachability,
+        Safety,
+        Liveness,
+        LeadsTo,
+        DeadlockFreedom
+    }
+
+    public enum VerifytaStatus
+    {
+        NotRun,
+        Passed,
+        Failed,
+        Error,
+        NotConfigured
+    }
+
+    public class FunctionDescriptor
+    {
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public string Signature { get; set; } = string.Empty;
+        public string Namespace { get; set; } = string.Empty;
+        public string ContainingType { get; set; } = string.Empty;
+        public string ReturnType { get; set; } = string.Empty;
+        public bool IsPublic { get; set; }
+        public bool IsStatic { get; set; }
+        public bool IsAsync { get; set; }
+        public bool IsSynthetic { get; set; }
+        public bool IsUnresolvedStub { get; set; }
+        public int LineNumber { get; set; }
+        public string SourceFile { get; set; } = string.Empty;
+        public string Body { get; set; } = string.Empty;
+        public List<ParameterInfo> Parameters { get; set; } = new();
+        public List<string> DirectCallIds { get; set; } = new();
+        public List<string> UnresolvedCalls { get; set; } = new();
+    }
+
+    public class FunctionSelection
+    {
+        public string FunctionId { get; set; } = string.Empty;
+        public bool IsSelected { get; set; }
+        public FunctionModelingMode Mode { get; set; } = FunctionModelingMode.ExplicitAutomaton;
+    }
+
+    public class VariableDomain
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Type { get; set; } = "int";
+        public int Min { get; set; } = -10;
+        public int Max { get; set; } = 10;
+        public bool IsBoolean { get; set; }
+        public bool IsEditable { get; set; } = true;
+        public string Source { get; set; } = "default";
+        public List<string> AllowedValues { get; set; } = new();
+
+        public string ToUppaalSelectType()
+        {
+            if (IsBoolean || Type.Equals("bool", StringComparison.OrdinalIgnoreCase))
+                return "bool";
+
+            return $"int[{Min},{Max}]";
+        }
+    }
+
+    public class TranslationAssumption
+    {
+        public AssumptionSeverity Severity { get; set; } = AssumptionSeverity.Info;
+        public string Category { get; set; } = string.Empty;
+        public string SymbolName { get; set; } = string.Empty;
+        public string Location { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+        public bool IsUserEditable { get; set; }
+    }
+
+    public class RequirementInterpretation
+    {
+        public string RequirementText { get; set; } = string.Empty;
+        public RequirementKind Kind { get; set; } = RequirementKind.Unknown;
+        public string Predicate { get; set; } = string.Empty;
+        public string TriggerPredicate { get; set; } = string.Empty;
+        public string TargetPredicate { get; set; } = string.Empty;
+        public double Confidence { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public List<GeneratedQuery> GeneratedQueries { get; set; } = new();
+    }
+
+    public class GeneratedQuery
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Formula { get; set; } = string.Empty;
+        public string Comment { get; set; } = string.Empty;
+        public string Source { get; set; } = "auto";
+        public bool IsEditable { get; set; } = true;
+        public bool IsValidated { get; set; } = true;
+    }
+
+    public class GenerationReport
+    {
+        public List<FunctionDescriptor> Functions { get; set; } = new();
+        public List<FunctionDescriptor> IncludedFunctions { get; set; } = new();
+        public List<TranslationAssumption> Assumptions { get; set; } = new();
+        public List<VariableDomain> Domains { get; set; } = new();
+        public List<GeneratedQuery> Queries { get; set; } = new();
+        public VerifytaResult VerifytaResult { get; set; } = new();
+        public UppaalCompatibilityResult Compatibility { get; set; } = new();
+        public LayoutFixResult Layout { get; set; } = new();
+        public string Summary { get; set; } = string.Empty;
+    }
+
+    public class VerifytaResult
+    {
+        public VerifytaStatus Status { get; set; } = VerifytaStatus.NotRun;
+        public string VerifytaPath { get; set; } = string.Empty;
+        public int ExitCode { get; set; }
+        public string Output { get; set; } = string.Empty;
+        public string Error { get; set; } = string.Empty;
+        public List<VerificationProperty> Properties { get; set; } = new();
+    }
+
+    public class ModelGenerationRequest
+    {
+        public string ProjectName { get; set; } = "GeneratedModel";
+        public string SourceCode { get; set; } = string.Empty;
+        public string FileName { get; set; } = "Source.cs";
+        public List<FunctionSelection> FunctionSelections { get; set; } = new();
+        public List<VariableDomain> DomainOverrides { get; set; } = new();
+        public List<GeneratedQuery> UserQueries { get; set; } = new();
+        public string RequirementsText { get; set; } = string.Empty;
+        public OllamaRequirementSettings RequirementSettings { get; set; } = new();
+    }
+
+    public class OllamaRequirementSettings
+    {
+        public bool Enabled { get; set; }
+        public string BaseUrl { get; set; } = "http://localhost:11434/api";
+        public string Model { get; set; } = "llama3.1";
+        public int TimeoutSeconds { get; set; } = 45;
+    }
+
+    public class LayoutFixResult
+    {
+        public string XmlContent { get; set; } = string.Empty;
+        public string ReportText { get; set; } = string.Empty;
+        public List<LayoutTemplateReport> Templates { get; set; } = new();
+    }
+
+    public class LayoutTemplateReport
+    {
+        public string TemplateName { get; set; } = string.Empty;
+        public int LocationCount { get; set; }
+        public int TransitionCount { get; set; }
+        public int UnreachableLocationCount { get; set; }
+        public int EdgeCrossingCount { get; set; }
+        public List<string> UnreachableLocations { get; set; } = new();
+        public List<string> RemovedLocations { get; set; } = new();
+    }
+
+    public enum UppaalCompatibilitySeverity
+    {
+        Info,
+        Warning,
+        Error
+    }
+
+    public class UppaalCompatibilityIssue
+    {
+        public UppaalCompatibilitySeverity Severity { get; set; }
+        public string Category { get; set; } = string.Empty;
+        public string Position { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+    }
+
+    public class UppaalCompatibilityResult
+    {
+        public bool IsReady => Issues.TrueForAll(i => i.Severity != UppaalCompatibilitySeverity.Error);
+        public List<UppaalCompatibilityIssue> Issues { get; set; } = new();
+
+        public int ErrorCount => Issues.FindAll(i => i.Severity == UppaalCompatibilitySeverity.Error).Count;
+        public int WarningCount => Issues.FindAll(i => i.Severity == UppaalCompatibilitySeverity.Warning).Count;
     }
 }

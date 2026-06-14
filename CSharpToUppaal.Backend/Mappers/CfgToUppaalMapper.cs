@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using CSharpToUppaal.Backend.Models;
 
+#nullable disable
 namespace CSharpToUppaal.Backend.Mappers
 {
     public interface ICfgToUppaalMapper

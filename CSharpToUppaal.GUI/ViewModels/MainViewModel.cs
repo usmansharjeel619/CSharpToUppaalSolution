@@ -1,8 +1,12 @@
 ﻿// ViewModels/MainViewModel.cs
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using CSharpToUppaal.Backend.Models;
+using CSharpToUppaal.Backend.Services;
+using CSharpToUppaal.GUI.Services;
 using Microsoft.Win32;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Linq;
@@ -15,11 +19,13 @@ using System.Windows.Shapes;
 using System.IO;
 using IOPath = System.IO.Path;
 
+#nullable disable
 namespace CSharpToUppaal.GUI.ViewModels
 {
     public partial class MainViewModel : ObservableObject
     {
         private readonly CSharpToUppaal.Backend.CSharpToUppaalEngine _engine;
+        private GuiAppSettings _settings;
         private CSharpToUppaal.Backend.Models.Project _project;
         private Canvas _cfgCanvas;
         private Canvas _uppaalCanvas;
@@ -104,6 +110,36 @@ namespace BankSystem
         private string _layoutOutputXml = "";
 
         [ObservableProperty]
+        private string _layoutReportText = "";
+
+        [ObservableProperty]
+        private string _requirementsText = "The generated model must be deadlock free.";
+
+        [ObservableProperty]
+        private ObservableCollection<FunctionSelectionViewModel> _functionSelections = new();
+
+        [ObservableProperty]
+        private ObservableCollection<TranslationAssumption> _assumptions = new();
+
+        [ObservableProperty]
+        private ObservableCollection<VariableDomain> _domains = new();
+
+        [ObservableProperty]
+        private ObservableCollection<GeneratedQuery> _generatedQueries = new();
+
+        [ObservableProperty]
+        private ObservableCollection<UppaalCompatibilityIssue> _compatibilityIssues = new();
+
+        [ObservableProperty]
+        private string _readinessStatus = "Not checked";
+
+        [ObservableProperty]
+        private string _generationReportText = "";
+
+        [ObservableProperty]
+        private string _settingsSummary = "";
+
+        [ObservableProperty]
         private ObservableCollection<CSharpToUppaal.Backend.Models.MethodInfo> _methods = new();
 
         partial void OnMethodsChanged(ObservableCollection<CSharpToUppaal.Backend.Models.MethodInfo> value)
@@ -115,19 +151,15 @@ namespace BankSystem
         private CSharpToUppaal.Backend.Models.MethodInfo _selectedMethod;
 
         [ObservableProperty]
-        private ObservableCollection<CSharpToUppaal.Backend.Models.VerificationProperty> _verificationResults = new();
-
-        [ObservableProperty]
-        private string _verificationStatus = "Not run";
-
-        [ObservableProperty]
         private ObservableCollection<TreeItemViewModel> _projectItems = new();
 
         public bool IsNotBusy => !IsBusy;
 
         public MainViewModel()
         {
+            _settings = AppSettingsService.Load();
             _engine = new CSharpToUppaal.Backend.CSharpToUppaalEngine();
+            UpdateSettingsSummary();
 
             // Test: Add a dummy method to verify binding works
             Console.WriteLine("MainViewModel constructor called");
@@ -178,12 +210,6 @@ namespace BankSystem
                 var nodePositions = new Dictionary<string, Point>();
                 var processedNodes = new HashSet<string>();
                 var nodeLevels = new Dictionary<string, int>(); // Track vertical level of each node
-                
-                // Helper function to count outgoing edges from a node
-                int GetOutgoingEdgeCount(string nodeId)
-                {
-                    return cfg.Edges.Count(e => e.FromNodeId == nodeId);
-                }
                 
                 // Helper function to get children of a node
                 List<string> GetChildren(string nodeId)
@@ -488,8 +514,6 @@ namespace BankSystem
                 // Layout parameters
                 double locationWidth = 100;
                 double locationHeight = 70;
-                double horizontalSpacing = 180;
-                double verticalSpacing = 150;
                 double startX = 80;
                 double startY = 80;
 
@@ -828,6 +852,7 @@ namespace BankSystem
                     Console.WriteLine("WARNING: No methods found!");
                 }
 
+                await RefreshSemanticFunctionListAsync();
                 UpdateProjectTree();
 
                 StatusMessage = $"Sample project loaded with {Methods.Count} methods";
@@ -880,6 +905,101 @@ namespace BankSystem
             ProjectItems.Add(projectNode);
         }
 
+        private async Task RefreshSemanticFunctionListAsync()
+        {
+            FunctionSelections.Clear();
+            Assumptions.Clear();
+            Domains.Clear();
+            GeneratedQueries.Clear();
+            CompatibilityIssues.Clear();
+            ReadinessStatus = "Not checked";
+            GenerationReportText = "";
+
+            if (string.IsNullOrWhiteSpace(SourceCode))
+                return;
+
+            var analysis = await _engine.AnalyzeSourceCodeAsync(SourceCode, "Source.cs");
+            var hasMain = analysis.Functions.Any(f => f.Name == "Main");
+
+            foreach (var function in analysis.Functions.OrderBy(f => f.LineNumber))
+            {
+                FunctionSelections.Add(new FunctionSelectionViewModel(function)
+                {
+                    IsSelected = hasMain ? function.Name == "Main" : true,
+                    Mode = FunctionModelingMode.ExplicitAutomaton
+                });
+            }
+
+            foreach (var assumption in analysis.Assumptions)
+                Assumptions.Add(assumption);
+
+            foreach (var diagnostic in analysis.Diagnostics)
+            {
+                Assumptions.Add(new TranslationAssumption
+                {
+                    Severity = AssumptionSeverity.Warning,
+                    Category = "Compilation",
+                    Message = diagnostic
+                });
+            }
+
+            StatusMessage = $"Semantic analysis found {FunctionSelections.Count} function(s)";
+        }
+
+        private List<FunctionSelection> BuildFunctionSelections()
+        {
+            return FunctionSelections.Select(f => new FunctionSelection
+            {
+                FunctionId = f.FunctionId,
+                IsSelected = f.IsSelected,
+                Mode = f.Mode
+            }).ToList();
+        }
+
+        private void ApplyGenerationReport(UppaalModel model)
+        {
+            Assumptions.Clear();
+            Domains.Clear();
+            GeneratedQueries.Clear();
+            CompatibilityIssues.Clear();
+
+            foreach (var assumption in model.GenerationReport.Assumptions)
+                Assumptions.Add(assumption);
+
+            foreach (var domain in model.GenerationReport.Domains)
+                Domains.Add(domain);
+
+            foreach (var query in model.GenerationReport.Queries)
+                GeneratedQueries.Add(query);
+
+            ApplyCompatibilityReport(model.GenerationReport.Compatibility);
+            GenerationReportText = model.GenerationReport.Summary;
+        }
+
+        private void UpdateSettingsSummary()
+        {
+            var ollama = _settings.OllamaEnabled ? $"{_settings.OllamaModel} at {_settings.OllamaBaseUrl}" : "Ollama disabled";
+            SettingsSummary = $"Export-first mode; {ollama}";
+        }
+
+        private void ApplyCompatibilityReport(UppaalCompatibilityResult compatibility)
+        {
+            CompatibilityIssues.Clear();
+            foreach (var issue in compatibility.Issues)
+                CompatibilityIssues.Add(issue);
+
+            ReadinessStatus = compatibility.IsReady
+                ? $"Ready for UPPAAL 4.1.18 ({compatibility.WarningCount} warning(s))"
+                : $"Blocked: {compatibility.ErrorCount} error(s), {compatibility.WarningCount} warning(s)";
+        }
+
+        private UppaalCompatibilityResult ValidateCurrentXmlForExport()
+        {
+            var compatibility = new UppaalCompatibilityValidator().Validate(UppaalXml);
+            ApplyCompatibilityReport(compatibility);
+            return compatibility;
+        }
+
         [RelayCommand]
         private async Task NewProject()
         {
@@ -895,8 +1015,14 @@ namespace BankSystem
                     CurrentProjectName = _project.Name;
 
                     Methods.Clear();
+                    FunctionSelections.Clear();
+                    Assumptions.Clear();
+                    Domains.Clear();
+                    GeneratedQueries.Clear();
+                    CompatibilityIssues.Clear();
+                    ReadinessStatus = "Not checked";
+                    GenerationReportText = "";
                     UppaalXml = "<!-- UPPAAL model will be generated here -->";
-                    VerificationResults.Clear();
                     UpdateProjectTree();
 
                     StatusMessage = "New project created";
@@ -951,6 +1077,7 @@ namespace BankSystem
                         SelectedMethod = Methods.First();
                     }
 
+                    await RefreshSemanticFunctionListAsync();
                     UpdateProjectTree();
 
                     StatusMessage = $"Loaded {sourceFile.Methods.Count} methods from {IOPath.GetFileName(openFileDialog.FileName)}";
@@ -1026,6 +1153,7 @@ namespace BankSystem
                     Console.WriteLine("WARNING: Methods collection is empty after parsing!");
                 }
 
+                await RefreshSemanticFunctionListAsync();
                 UpdateProjectTree();
 
                 StatusMessage = $"Parsed {sourceFile.Methods.Count} methods";
@@ -1056,9 +1184,9 @@ namespace BankSystem
             try
             {
                 IsBusy = true;
-                StatusMessage = "Analyzing code complexity...";
-                await Task.Delay(100);
-                StatusMessage = "Code analysis complete";
+                StatusMessage = "Running semantic analysis...";
+                await RefreshSemanticFunctionListAsync();
+                StatusMessage = $"Analysis complete: {FunctionSelections.Count} function(s), {Assumptions.Count} assumption(s)";
             }
             catch (Exception ex)
             {
@@ -1074,6 +1202,55 @@ namespace BankSystem
 
         [RelayCommand]
         private async Task RunAnalysis() => await AnalyzeCode();
+
+        [RelayCommand]
+        private async Task InterpretRequirements()
+        {
+            try
+            {
+                if (FunctionSelections.Count == 0)
+                    await RefreshSemanticFunctionListAsync();
+
+                IsBusy = true;
+                StatusMessage = "Interpreting requirements...";
+
+                var service = new RequirementTranslationService();
+                var context = new RequirementTranslationContext
+                {
+                    Functions = FunctionSelections.Select(f => f.Function).ToList(),
+                    Variables = Domains.Select(d => d.Name.Split('.').Last()).Distinct().ToList()
+                };
+
+                if (context.Variables.Count == 0)
+                {
+                    context.Variables = Methods
+                        .SelectMany(m => m.Parameters.Select(p => p.Name))
+                        .Distinct()
+                        .ToList();
+                }
+
+                var interpretations = await service.InterpretAsync(
+                    RequirementsText,
+                    context,
+                    _settings.ToRequirementSettings());
+
+                GeneratedQueries.Clear();
+                foreach (var query in interpretations.SelectMany(i => i.GeneratedQueries))
+                    GeneratedQueries.Add(query);
+
+                StatusMessage = $"Interpreted requirements: {GeneratedQueries.Count} query/query candidate(s)";
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Error interpreting requirements: {ex.Message}";
+                MessageBox.Show($"Error interpreting requirements: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                IsBusy = false;
+            }
+        }
 
         [RelayCommand]
         private async Task GenerateCfg()
@@ -1112,9 +1289,25 @@ namespace BankSystem
                 IsBusy = true;
                 StatusMessage = "Generating UPPAAL model...";
 
-                var model = await _engine.GenerateModelAsync(_project, ModelName);
+                if (FunctionSelections.Count == 0)
+                    await RefreshSemanticFunctionListAsync();
+
+                var request = new ModelGenerationRequest
+                {
+                    ProjectName = ModelName,
+                    SourceCode = SourceCode,
+                    FileName = _project.SourceFiles.FirstOrDefault()?.FilePath ?? "Source.cs",
+                    FunctionSelections = BuildFunctionSelections(),
+                    DomainOverrides = Domains.ToList(),
+                    UserQueries = GeneratedQueries.ToList(),
+                    RequirementsText = GeneratedQueries.Count == 0 ? RequirementsText : string.Empty,
+                    RequirementSettings = _settings.ToRequirementSettings()
+                };
+
+                var model = await _engine.GenerateModelAsync(request);
                 UppaalXml = model.XmlContent;
                 IsXmlReadOnly = false;
+                ApplyGenerationReport(model);
 
                 // Render visual preview
                 await DrawUppaalModelAsync(model);
@@ -1123,6 +1316,9 @@ namespace BankSystem
 
                 MessageBox.Show($"UPPAAL model '{model.Name}' generated successfully!\n" +
                               $"- Templates: {model.Templates.Count}\n" +
+                              $"- Assumptions: {model.GenerationReport.Assumptions.Count}\n" +
+                              $"- Queries: {model.GenerationReport.Queries.Count}\n" +
+                              $"- Readiness: {ReadinessStatus}\n" +
                               $"- Status: {model.Status}\n" +
                               $"- Generated at: {model.GeneratedAt:HH:mm:ss}",
                               "Model Generated", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -1140,7 +1336,7 @@ namespace BankSystem
         }
 
         [RelayCommand]
-        private async Task VerifyModel()
+        private async Task ExportModel()
         {
             try
             {
@@ -1151,59 +1347,16 @@ namespace BankSystem
                     return;
                 }
 
-                IsBusy = true;
-                StatusMessage = "Verifying UPPAAL model...";
-                VerificationStatus = "Running...";
-
-                var model = new CSharpToUppaal.Backend.Models.UppaalModel
+                var compatibility = ValidateCurrentXmlForExport();
+                if (!compatibility.IsReady)
                 {
-                    Name = ModelName,
-                    XmlContent = UppaalXml
-                };
-
-                var summary = await _engine.VerifyModelAsync(model);
-
-                VerificationResults.Clear();
-                foreach (var property in summary.Properties)
-                {
-                    VerificationResults.Add(property);
-                }
-
-                VerificationStatus = $"Verified: {summary.VerifiedProperties}/{summary.TotalProperties}";
-                StatusMessage = $"Verification complete: {summary.VerifiedProperties}/{summary.TotalProperties} properties verified";
-
-                MessageBox.Show($"Verification completed!\n" +
-                              $"- Total properties: {summary.TotalProperties}\n" +
-                              $"- Verified: {summary.VerifiedProperties}\n" +
-                              $"- Failed: {summary.FailedProperties}\n" +
-                              $"- Time: {summary.VerificationTime:mm\\:ss\\.fff}",
-                              "Verification Results", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            catch (Exception ex)
-            {
-                StatusMessage = $"Error verifying model: {ex.Message}";
-                VerificationStatus = "Error";
-                MessageBox.Show($"Error verifying model: {ex.Message}", "Error",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            finally
-            {
-                IsBusy = false;
-            }
-        }
-
-        [RelayCommand]
-        private async Task RunVerification() => await VerifyModel();
-
-        [RelayCommand]
-        private async Task ExportModel()
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(UppaalXml) || UppaalXml.Contains("<!--"))
-                {
-                    MessageBox.Show("Please generate a UPPAAL model first", "No Model",
-                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    var details = string.Join(Environment.NewLine, compatibility.Issues
+                        .Where(i => i.Severity == UppaalCompatibilitySeverity.Error)
+                        .Take(8)
+                        .Select(i => $"{i.Position}: {i.Message}"));
+                    MessageBox.Show($"Export blocked because the XML is not ready for UPPAAL 4.1.18.\n\n{details}",
+                        "UPPAAL Readiness Errors", MessageBoxButton.OK, MessageBoxImage.Error);
+                    StatusMessage = $"Export blocked: {compatibility.ErrorCount} UPPAAL readiness error(s).";
                     return;
                 }
 
@@ -1299,9 +1452,11 @@ namespace BankSystem
                 IsBusy = true;
                 StatusMessage = "Fixing UPPAAL model layout...";
 
-                string fixedXml = await Task.Run(() => _engine.FixUppaalLayout(LayoutInputXml));
+                var layoutService = new UppaalLayoutService();
+                var result = await Task.Run(() => layoutService.FixLayoutWithReport(LayoutInputXml));
 
-                LayoutOutputXml = fixedXml;
+                LayoutOutputXml = result.XmlContent;
+                LayoutReportText = result.ReportText;
 
                 StatusMessage = "Layout fixed — nodes repositioned, edges re-routed.";
             }
@@ -1362,6 +1517,7 @@ namespace BankSystem
         {
             LayoutInputXml = "";
             LayoutOutputXml = "";
+            LayoutReportText = "";
             StatusMessage = "Layout Fixer cleared.";
         }
 
@@ -1577,14 +1733,6 @@ namespace BankSystem
         }
 
         [RelayCommand]
-        private void ClearVerification()
-        {
-            VerificationResults.Clear();
-            VerificationStatus = "Cleared";
-            StatusMessage = "Verification results cleared";
-        }
-
-        [RelayCommand]
         private void ClearAll()
         {
             var result = MessageBox.Show("Are you sure you want to clear all data?", "Clear All",
@@ -1596,9 +1744,14 @@ namespace BankSystem
                 CurrentProjectName = "No project loaded";
                 SourceCode = "";
                 Methods.Clear();
+                FunctionSelections.Clear();
+                Assumptions.Clear();
+                Domains.Clear();
+                GeneratedQueries.Clear();
+                CompatibilityIssues.Clear();
+                ReadinessStatus = "Not checked";
+                GenerationReportText = "";
                 UppaalXml = "<!-- UPPAAL model will be generated here -->";
-                VerificationResults.Clear();
-                VerificationStatus = "Not run";
                 ProjectItems.Clear();
                 if (_cfgCanvas != null) _cfgCanvas.Children.Clear();
                 StatusMessage = "All data cleared";
@@ -1612,14 +1765,15 @@ namespace BankSystem
         private void ShowModel() => StatusMessage = "Showing UPPAAL model";
 
         [RelayCommand]
-        private void ShowVerification() => StatusMessage = "Showing verification results";
-
-        [RelayCommand]
         private void OpenSettings()
         {
-            var settingsWindow = new SettingsWindow();
-            settingsWindow.ShowDialog();
-            StatusMessage = "Settings updated";
+            var settingsWindow = new SettingsWindow(_settings);
+            if (settingsWindow.ShowDialog() == true)
+            {
+                _settings = settingsWindow.Settings;
+                UpdateSettingsSummary();
+                StatusMessage = "Settings updated";
+            }
         }
 
         [RelayCommand]
@@ -1650,6 +1804,33 @@ namespace BankSystem
 
         [RelayCommand]
         private void Exit() => Application.Current.Shutdown();
+    }
+
+    public partial class FunctionSelectionViewModel : ObservableObject
+    {
+        public FunctionDescriptor Function { get; }
+
+        public string FunctionId => Function.Id;
+        public string Name => Function.DisplayName;
+        public string Signature => Function.Signature;
+        public string ReturnType => Function.ReturnType;
+        public string Parameters => string.Join(", ", Function.Parameters.Select(p => $"{p.Type} {p.Name}"));
+        public int LineNumber => Function.LineNumber;
+        public string DependencyCount => Function.DirectCallIds.Count.ToString();
+        public string Warnings => Function.UnresolvedCalls.Count == 0
+            ? string.Empty
+            : string.Join("; ", Function.UnresolvedCalls);
+
+        [ObservableProperty]
+        private bool _isSelected;
+
+        [ObservableProperty]
+        private FunctionModelingMode _mode = FunctionModelingMode.ExplicitAutomaton;
+
+        public FunctionSelectionViewModel(FunctionDescriptor function)
+        {
+            Function = function;
+        }
     }
 
     public class TreeItemViewModel : ObservableObject

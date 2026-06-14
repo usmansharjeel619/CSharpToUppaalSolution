@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 using CSharpToUppaal.Backend.Models;
 
+#nullable disable
 namespace CSharpToUppaal.Backend.Verification
 {
     public interface IUppaalVerifier
@@ -36,12 +38,29 @@ namespace CSharpToUppaal.Backend.Verification
 
                 var stopwatch = Stopwatch.StartNew();
 
+                if (!IsVerifytaConfigured())
+                {
+                    stopwatch.Stop();
+                    summary.VerificationTime = stopwatch.Elapsed;
+                    summary.Properties.Add(new VerificationProperty
+                    {
+                        Name = "VerifytaNotConfigured",
+                        Formula = "A[] not deadlock",
+                        IsVerified = false,
+                        Result = "NotConfigured",
+                        ErrorMessage = "UPPAAL verifyta executable was not found. Configure the verifyta path in Settings."
+                    });
+                    summary.TotalProperties = 1;
+                    summary.FailedProperties = 1;
+                    return summary;
+                }
+
                 // Create temporary files
                 var tempXmlFile = System.IO.Path.GetTempFileName() + ".xml";
                 var tempQueryFile = System.IO.Path.GetTempFileName() + ".q";
 
                 await System.IO.File.WriteAllTextAsync(tempXmlFile, model.XmlContent);
-                await System.IO.File.WriteAllTextAsync(tempQueryFile, GenerateDefaultQueries());
+                await System.IO.File.WriteAllTextAsync(tempQueryFile, GenerateQueryFile(model.XmlContent));
 
                 // Run verifyta
                 var result = await RunVerifytaAsync(tempXmlFile, tempQueryFile);
@@ -81,6 +100,9 @@ namespace CSharpToUppaal.Backend.Verification
         {
             try
             {
+                if (!IsVerifytaConfigured())
+                    return false;
+
                 var tempFile = System.IO.Path.GetTempFileName() + ".xml";
                 await System.IO.File.WriteAllTextAsync(tempFile, xmlContent);
 
@@ -104,6 +126,23 @@ namespace CSharpToUppaal.Backend.Verification
         public async Task<List<VerificationProperty>> VerifyPropertiesAsync(string xmlContent, List<string> properties)
         {
             var verifiedProperties = new List<VerificationProperty>();
+
+            if (!IsVerifytaConfigured())
+            {
+                foreach (var property in properties)
+                {
+                    verifiedProperties.Add(new VerificationProperty
+                    {
+                        Name = $"Property_{verifiedProperties.Count + 1}",
+                        Formula = property,
+                        IsVerified = false,
+                        Result = "NotConfigured",
+                        ErrorMessage = "UPPAAL verifyta executable was not found. Configure the verifyta path in Settings."
+                    });
+                }
+
+                return verifiedProperties;
+            }
 
             foreach (var property in properties)
             {
@@ -147,10 +186,9 @@ namespace CSharpToUppaal.Backend.Verification
 
         private async Task<string> RunVerifytaAsync(string modelFile, string queryFile)
         {
-            if (string.IsNullOrEmpty(_verifytaPath) || !System.IO.File.Exists(_verifytaPath))
+            if (!IsVerifytaConfigured())
             {
-                Console.WriteLine("UPPAAL verifyta executable not found. Using dummy verification.");
-                return "Verification skipped (UPPAAL not installed)\nAll properties are satisfied";
+                throw new VerificationException("UPPAAL verifyta executable was not found. Configure the verifyta path in Settings.");
             }
 
             var processStartInfo = new ProcessStartInfo
@@ -171,29 +209,34 @@ namespace CSharpToUppaal.Backend.Verification
 
             await process.WaitForExitAsync();
 
-            if (!string.IsNullOrEmpty(error))
+            if (process.ExitCode != 0 || !string.IsNullOrEmpty(error))
             {
-                throw new VerificationException($"UPPAAL verification error: {error}");
+                throw new VerificationException($"UPPAAL verification error: {error}{Environment.NewLine}{output}");
             }
 
             return output;
         }
 
-        private string GenerateDefaultQueries()
+        private string GenerateQueryFile(string xmlContent)
         {
-            return @"
-// Safety property: No deadlock
-A[] not deadlock
+            try
+            {
+                var doc = XDocument.Parse(RemoveDoctype(xmlContent));
+                var formulas = doc.Descendants("query")
+                    .Select(q => q.Element("formula")?.Value?.Trim())
+                    .Where(f => !string.IsNullOrWhiteSpace(f))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
 
-// Liveness: Eventually the system reaches a stable state
-E<> forall (i:id_t) Process(i).Stable
+                if (formulas.Count > 0)
+                    return string.Join(Environment.NewLine, formulas);
+            }
+            catch
+            {
+                // Fall through to the mandatory safety check.
+            }
 
-// Response property: If request then eventually response
-Process(0).Request --> Process(0).Response
-
-// Boundness: Counter never exceeds maximum
-A[] globalCounter <= 10
-";
+            return "A[] not deadlock";
         }
 
         private List<VerificationProperty> ParseVerificationOutput(string output)
@@ -240,6 +283,23 @@ A[] globalCounter <= 10
             return output.Contains("is satisfied");
         }
 
+        private bool IsVerifytaConfigured()
+        {
+            if (string.IsNullOrWhiteSpace(_verifytaPath))
+                return false;
+
+            if (System.IO.File.Exists(_verifytaPath))
+                return true;
+
+            return false;
+        }
+
+        private static string RemoveDoctype(string xml)
+        {
+            var lines = xml.Split('\n');
+            return string.Join("\n", lines.Where(l => !l.TrimStart().StartsWith("<!DOCTYPE", StringComparison.Ordinal)));
+        }
+
         private string FindVerifytaPath()
         {
             // Common UPPAAL installation paths
@@ -250,14 +310,24 @@ A[] globalCounter <= 10
                 @"C:\Program Files (x86)\Uppaal\bin-Windows\verifyta.exe",
                 @"C:\Uppaal\bin-Windows\verifyta.exe",
                 @"/usr/local/bin/verifyta",
-                @"/usr/bin/verifyta",
-                @"verifyta"  // If it's in PATH
+                @"/usr/bin/verifyta"
             };
 
             foreach (var path in possiblePaths)
             {
                 if (System.IO.File.Exists(path))
                     return path;
+            }
+
+            var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+            foreach (var dir in pathEnv.Split(System.IO.Path.PathSeparator))
+            {
+                if (string.IsNullOrWhiteSpace(dir))
+                    continue;
+
+                var candidate = System.IO.Path.Combine(dir, OperatingSystem.IsWindows() ? "verifyta.exe" : "verifyta");
+                if (System.IO.File.Exists(candidate))
+                    return candidate;
             }
 
             return null;

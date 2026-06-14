@@ -11,7 +11,7 @@
                                WordWrap="False"
                                HorizontalScrollBarVisibility="Auto"
                                VerticalScrollBarVisibility="Auto"
-                               Background="White"
-                               Foreground="Black"/>
+                               Background="{StaticResource BackgroundBrush}"
+                               Foreground="{StaticResource TextPrimaryBrush}"/>
     </Grid>
 </UserControl>
