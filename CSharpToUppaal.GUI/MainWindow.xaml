@@ -111,16 +111,21 @@
                 <Grid Background="{StaticResource BackgroundBrush}">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
                     <StackPanel Grid.Row="0"
                                Orientation="Horizontal"
                                Background="{StaticResource PrimaryMidBrush}">
-                        <Button Content="Load File"
+                        <Button Content="Load File(s)"
                                 Command="{Binding LoadFileCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 Margin="8"/>
+                        <Button Content="Open Folder"
+                                Command="{Binding OpenFolderCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                Margin="4"/>
                         <Button Content="Parse"
                                 Command="{Binding ParseCodeCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
@@ -131,7 +136,33 @@
                                 Margin="4"/>
                     </StackPanel>
 
-                    <controls:CodeEditor Grid.Row="1"
+                    <!-- File selector bar — only visible when multiple files are loaded -->
+                    <StackPanel Grid.Row="1"
+                                Orientation="Horizontal"
+                                Background="{StaticResource PrimaryDarkBrush}"
+                                Visibility="{Binding HasMultipleFiles, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="Viewing:"
+                                   Foreground="White"
+                                   VerticalAlignment="Center"
+                                   Margin="8,4"/>
+                        <ComboBox ItemsSource="{Binding LoadedSourceFiles}"
+                                  SelectedItem="{Binding SelectedLoadedFile, Mode=TwoWay}"
+                                  DisplayMemberPath="FileName"
+                                  MinWidth="260"
+                                  VerticalAlignment="Center"
+                                  Margin="4"/>
+                        <TextBlock Foreground="#AAAAAA"
+                                   VerticalAlignment="Center"
+                                   Margin="8,4">
+                            <TextBlock.Text>
+                                <MultiBinding StringFormat="{}{0} file(s) loaded">
+                                    <Binding Path="LoadedSourceFiles.Count"/>
+                                </MultiBinding>
+                            </TextBlock.Text>
+                        </TextBlock>
+                    </StackPanel>
+
+                    <controls:CodeEditor Grid.Row="2"
                                        Text="{Binding SourceCode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                 </Grid>
             </TabItem>

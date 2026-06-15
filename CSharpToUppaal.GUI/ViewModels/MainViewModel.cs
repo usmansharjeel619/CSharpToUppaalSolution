@@ -161,6 +161,26 @@ namespace BankSystem
         [ObservableProperty]
         private ObservableCollection<TreeItemViewModel> _projectItems = new();
 
+        public ObservableCollection<SourceFile> LoadedSourceFiles { get; } = new();
+
+        private SourceFile _selectedLoadedFile;
+        public SourceFile SelectedLoadedFile
+        {
+            get => _selectedLoadedFile;
+            set
+            {
+                if (SetProperty(ref _selectedLoadedFile, value) && value != null)
+                    SourceCode = value.Content;
+            }
+        }
+
+        private bool _hasMultipleFiles;
+        public bool HasMultipleFiles
+        {
+            get => _hasMultipleFiles;
+            set => SetProperty(ref _hasMultipleFiles, value);
+        }
+
         public bool IsNotBusy => !IsBusy;
 
         public MainViewModel()
@@ -969,10 +989,14 @@ namespace BankSystem
             ReadinessStatus = "Not checked";
             GenerationReportText = "";
 
-            if (string.IsNullOrWhiteSpace(SourceCode))
+            var combinedCode = LoadedSourceFiles.Count > 0
+                ? string.Join("\n\n", LoadedSourceFiles.Select(f => f.Content))
+                : SourceCode;
+
+            if (string.IsNullOrWhiteSpace(combinedCode))
                 return;
 
-            var analysis = await _engine.AnalyzeSourceCodeAsync(SourceCode, "Source.cs");
+            var analysis = await _engine.AnalyzeSourceCodeAsync(combinedCode, "Source.cs");
             var hasMain = analysis.Functions.Any(f => f.Name == "Main");
 
             foreach (var function in analysis.Functions.OrderBy(f => f.LineNumber))
@@ -1122,50 +1146,86 @@ namespace BankSystem
         [RelayCommand]
         private async Task OpenFile()
         {
+            var dlg = new OpenFileDialog
+            {
+                Filter = "C# Files (*.cs)|*.cs|All files (*.*)|*.*",
+                Title = "Open C# File(s)",
+                Multiselect = true
+            };
+
+            if (dlg.ShowDialog() == true)
+                await LoadFilesAsync(dlg.FileNames);
+        }
+
+        [RelayCommand]
+        private async Task OpenFolder()
+        {
+            var dlg = new OpenFolderDialog { Title = "Select Project Folder" };
+            if (dlg.ShowDialog() != true) return;
+
+            var files = Directory.GetFiles(dlg.FolderName, "*.cs", SearchOption.AllDirectories)
+                .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\")
+                         && !f.Contains("\\test\\", StringComparison.OrdinalIgnoreCase)
+                         && !f.Contains("\\tests\\", StringComparison.OrdinalIgnoreCase)
+                         && !IOPath.GetFileName(f).EndsWith("Tests.cs", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(f => f)
+                .ToArray();
+
+            if (files.Length == 0)
+            {
+                MessageBox.Show("No C# source files found in the selected folder.", "No Files Found",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            await LoadFilesAsync(files);
+        }
+
+        private async Task LoadFilesAsync(IEnumerable<string> paths)
+        {
             try
             {
-                var openFileDialog = new OpenFileDialog
+                IsBusy = true;
+                var fileList = paths.ToArray();
+                StatusMessage = $"Loading {fileList.Length} file(s)...";
+
+                if (_project == null)
                 {
-                    Filter = "C# Files (*.cs)|*.cs|All files (*.*)|*.*",
-                    Title = "Open C# File"
-                };
-
-                if (openFileDialog.ShowDialog() == true)
-                {
-                    IsBusy = true;
-                    StatusMessage = $"Loading file: {openFileDialog.FileName}...";
-
-                    if (_project == null)
-                    {
-                        _project = await _engine.CreateProjectAsync(
-                            IOPath.GetFileNameWithoutExtension(openFileDialog.FileName));
-                        CurrentProjectName = _project.Name;
-                    }
-
-                    var sourceFile = await _engine.AddSourceFileAsync(_project, openFileDialog.FileName);
-                    SourceCode = sourceFile.Content;
-
-                    Methods.Clear();
-                    foreach (var method in sourceFile.Methods)
-                    {
-                        Methods.Add(method);
-                    }
-
-                    if (Methods.Any())
-                    {
-                        SelectedMethod = Methods.First();
-                    }
-
-                    await RefreshSemanticFunctionListAsync();
-                    UpdateProjectTree();
-
-                    StatusMessage = $"Loaded {sourceFile.Methods.Count} methods from {IOPath.GetFileName(openFileDialog.FileName)}";
+                    var projectName = fileList.Length == 1
+                        ? IOPath.GetFileNameWithoutExtension(fileList[0])
+                        : IOPath.GetFileName(IOPath.GetDirectoryName(fileList[0])) ?? "Project";
+                    _project = await _engine.CreateProjectAsync(projectName);
+                    CurrentProjectName = _project.Name;
                 }
+
+                Methods.Clear();
+                LoadedSourceFiles.Clear();
+
+                for (int i = 0; i < fileList.Length; i++)
+                {
+                    StatusMessage = $"Loading file {i + 1}/{fileList.Length}: {IOPath.GetFileName(fileList[i])}...";
+                    var sourceFile = await _engine.AddSourceFileAsync(_project, fileList[i]);
+                    LoadedSourceFiles.Add(sourceFile);
+                    foreach (var method in sourceFile.Methods)
+                        Methods.Add(method);
+                }
+
+                SelectedLoadedFile = LoadedSourceFiles.FirstOrDefault();
+                HasMultipleFiles = LoadedSourceFiles.Count > 1;
+
+                if (Methods.Any())
+                    SelectedMethod = Methods.First();
+
+                await RefreshSemanticFunctionListAsync();
+                UpdateProjectTree();
+
+                int totalMethods = LoadedSourceFiles.Sum(f => f.Methods.Count);
+                StatusMessage = $"Loaded {fileList.Length} file(s) with {totalMethods} method(s)";
             }
             catch (Exception ex)
             {
-                StatusMessage = $"Error loading file: {ex.Message}";
-                MessageBox.Show($"Error loading file: {ex.Message}", "Error",
+                StatusMessage = $"Error loading files: {ex.Message}";
+                MessageBox.Show($"Error loading files: {ex.Message}", "Error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally

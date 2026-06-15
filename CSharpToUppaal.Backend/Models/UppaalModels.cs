@@ -216,6 +216,7 @@ namespace CSharpToUppaal.Backend.Models
     {
         public Guid Id { get; set; } = Guid.NewGuid();
         public string FilePath { get; set; } = string.Empty;
+        public string FileName => System.IO.Path.GetFileName(FilePath);
         public string Content { get; set; } = string.Empty;
         public DateTime AddedAt { get; set; } = DateTime.UtcNow;
         public string Language { get; set; } = string.Empty;
