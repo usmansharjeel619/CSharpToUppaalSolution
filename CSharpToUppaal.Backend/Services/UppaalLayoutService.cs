@@ -54,7 +54,10 @@ namespace CSharpToUppaal.Backend.Services
             foreach (var templateEl in nta.Elements("template").ToList())
             {
                 RelayoutTemplate(templateEl, templateIndex);
-                result.Templates.Add(BuildTemplateReport(templateEl));
+                var removed = RemoveUnreachableLocations(templateEl);
+                var report = BuildTemplateReport(templateEl);
+                report.RemovedLocations.AddRange(removed);
+                result.Templates.Add(report);
                 templateIndex++;
             }
 
@@ -81,6 +84,57 @@ namespace CSharpToUppaal.Backend.Services
 
             return string.Join(Environment.NewLine, result.Templates.Select(t =>
                 $"{t.TemplateName}: {t.LocationCount} locations, {t.TransitionCount} transitions, {t.UnreachableLocationCount} unreachable locations, {t.EdgeCrossingCount} edge crossing(s), {t.RemovedLocations.Count} removed locations."));
+        }
+
+        private static List<string> RemoveUnreachableLocations(XElement templateEl)
+        {
+            var locations = templateEl.Elements("location").ToList();
+            var transitions = templateEl.Elements("transition").ToList();
+            var initId = templateEl.Element("init")?.Attribute("ref")?.Value
+                      ?? locations.FirstOrDefault()?.Attribute("id")?.Value
+                      ?? string.Empty;
+
+            var outgoing = transitions
+                .GroupBy(t => t.Element("source")?.Attribute("ref")?.Value ?? string.Empty)
+                .ToDictionary(g => g.Key, g => g
+                    .Select(t => t.Element("target")?.Attribute("ref")?.Value ?? string.Empty)
+                    .ToList());
+
+            var reachable = new HashSet<string>();
+            var queue = new Queue<string>();
+            if (!string.IsNullOrWhiteSpace(initId))
+                queue.Enqueue(initId);
+
+            while (queue.Count > 0)
+            {
+                var cur = queue.Dequeue();
+                if (!reachable.Add(cur)) continue;
+                if (outgoing.TryGetValue(cur, out var targets))
+                    foreach (var t in targets) queue.Enqueue(t);
+            }
+
+            var removedIds = new HashSet<string>();
+            var removedNames = new List<string>();
+            foreach (var loc in locations)
+            {
+                var id = loc.Attribute("id")?.Value ?? string.Empty;
+                if (!reachable.Contains(id))
+                {
+                    removedNames.Add(loc.Element("name")?.Value ?? id);
+                    removedIds.Add(id);
+                    loc.Remove();
+                }
+            }
+
+            foreach (var trans in transitions)
+            {
+                var src = trans.Element("source")?.Attribute("ref")?.Value ?? string.Empty;
+                var tgt = trans.Element("target")?.Attribute("ref")?.Value ?? string.Empty;
+                if (removedIds.Contains(src) || removedIds.Contains(tgt))
+                    trans.Remove();
+            }
+
+            return removedNames;
         }
 
         private static LayoutTemplateReport BuildTemplateReport(XElement templateEl)

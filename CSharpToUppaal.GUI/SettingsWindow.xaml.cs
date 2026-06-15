@@ -30,7 +30,7 @@ namespace CSharpToUppaal.GUI
                 ? "http://localhost:11434/api"
                 : OllamaBaseUrlTextBox.Text.Trim();
             Settings.OllamaModel = string.IsNullOrWhiteSpace(OllamaModelTextBox.Text)
-                ? "llama3.1"
+                ? "llama3:latest"
                 : OllamaModelTextBox.Text.Trim();
 
             if (int.TryParse(OllamaTimeoutTextBox.Text, out var timeout) && timeout > 0)

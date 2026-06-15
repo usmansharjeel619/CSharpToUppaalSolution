@@ -389,7 +389,7 @@ namespace CSharpToUppaal.Backend.Models
     {
         public bool Enabled { get; set; }
         public string BaseUrl { get; set; } = "http://localhost:11434/api";
-        public string Model { get; set; } = "llama3.1";
+        public string Model { get; set; } = "llama3:latest";
         public int TimeoutSeconds { get; set; } = 45;
     }
 

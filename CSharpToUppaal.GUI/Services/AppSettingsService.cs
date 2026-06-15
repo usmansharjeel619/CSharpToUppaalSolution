@@ -9,7 +9,7 @@ namespace CSharpToUppaal.GUI.Services
     {
         public bool OllamaEnabled { get; set; }
         public string OllamaBaseUrl { get; set; } = "http://localhost:11434/api";
-        public string OllamaModel { get; set; } = "llama3.1";
+        public string OllamaModel { get; set; } = "llama3:latest";
         public int OllamaTimeoutSeconds { get; set; } = 45;
 
         public OllamaRequirementSettings ToRequirementSettings()
@@ -18,7 +18,7 @@ namespace CSharpToUppaal.GUI.Services
             {
                 Enabled = OllamaEnabled,
                 BaseUrl = string.IsNullOrWhiteSpace(OllamaBaseUrl) ? "http://localhost:11434/api" : OllamaBaseUrl,
-                Model = string.IsNullOrWhiteSpace(OllamaModel) ? "llama3.1" : OllamaModel,
+                Model = string.IsNullOrWhiteSpace(OllamaModel) ? "llama3:latest" : OllamaModel,
                 TimeoutSeconds = OllamaTimeoutSeconds <= 0 ? 45 : OllamaTimeoutSeconds
             };
         }

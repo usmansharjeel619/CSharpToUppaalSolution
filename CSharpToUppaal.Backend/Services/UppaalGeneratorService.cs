@@ -804,17 +804,133 @@ namespace CSharpToUppaal.Backend.Services
 
                 var isBool = type.Equals("bool", StringComparison.OrdinalIgnoreCase)
                           || type.Equals("Boolean", StringComparison.OrdinalIgnoreCase);
+
+                int min = -10, max = 10;
+                if (!isBool && _methodById.TryGetValue(function.Id, out var method))
+                    (min, max) = InferIntRange(method, variableName);
+
                 var domain = new VariableDomain
                 {
                     Name = qualified,
                     Type = isBool ? "bool" : "int",
                     IsBoolean = isBool,
-                    Min = -10,
-                    Max = 10,
+                    Min = min,
+                    Max = max,
                     Source = source
                 };
                 _domains[qualified] = domain;
                 return domain;
+            }
+
+            private static bool TryGetIntLiteral(ExpressionSyntax expr, out int value)
+            {
+                if (expr is LiteralExpressionSyntax lit && int.TryParse(lit.Token.ValueText, out value))
+                    return true;
+                if (expr is PrefixUnaryExpressionSyntax unary
+                    && unary.IsKind(SyntaxKind.UnaryMinusExpression)
+                    && unary.Operand is LiteralExpressionSyntax negLit
+                    && int.TryParse(negLit.Token.ValueText, out int pos))
+                {
+                    value = -pos;
+                    return true;
+                }
+                value = 0;
+                return false;
+            }
+
+            private static (int min, int max) InferIntRange(MethodDeclarationSyntax method, string variableName)
+            {
+                int? lo = null, hi = null;
+
+                void UpdateLo(int v) => lo = lo.HasValue ? Math.Min(lo.Value, v) : v;
+                void UpdateHi(int v) => hi = hi.HasValue ? Math.Max(hi.Value, v) : v;
+
+                // 1. For-loop init + condition: for (int varName = INIT; varName < BOUND; ...)
+                foreach (var forStmt in method.DescendantNodes().OfType<ForStatementSyntax>())
+                {
+                    if (forStmt.Declaration == null) continue;
+                    bool isLoopVar = forStmt.Declaration.Variables.Any(
+                        v => v.Identifier.Text.Equals(variableName, StringComparison.Ordinal));
+                    if (!isLoopVar) continue;
+
+                    foreach (var variable in forStmt.Declaration.Variables)
+                    {
+                        if (!variable.Identifier.Text.Equals(variableName, StringComparison.Ordinal)) continue;
+                        if (variable.Initializer != null && TryGetIntLiteral(variable.Initializer.Value, out int initVal))
+                            UpdateLo(initVal);
+                    }
+
+                    if (forStmt.Condition is BinaryExpressionSyntax cond)
+                    {
+                        var kind = cond.Kind();
+                        if (cond.Left is IdentifierNameSyntax li
+                            && li.Identifier.Text.Equals(variableName, StringComparison.Ordinal)
+                            && TryGetIntLiteral(cond.Right, out int bound))
+                        {
+                            UpdateHi(kind == SyntaxKind.LessThanExpression ? bound - 1 : bound);
+                        }
+                        else if (cond.Right is IdentifierNameSyntax ri
+                            && ri.Identifier.Text.Equals(variableName, StringComparison.Ordinal)
+                            && TryGetIntLiteral(cond.Left, out int bound2))
+                        {
+                            UpdateHi(kind == SyntaxKind.GreaterThanExpression ? bound2 - 1 : bound2);
+                        }
+                    }
+                }
+
+                // 2. Literal initializers: int varName = N;
+                foreach (var localDecl in method.DescendantNodes().OfType<LocalDeclarationStatementSyntax>())
+                {
+                    foreach (var variable in localDecl.Declaration.Variables)
+                    {
+                        if (!variable.Identifier.Text.Equals(variableName, StringComparison.Ordinal)) continue;
+                        if (variable.Initializer != null && TryGetIntLiteral(variable.Initializer.Value, out int val))
+                        {
+                            UpdateLo(val);
+                            UpdateHi(val);
+                        }
+                    }
+                }
+
+                // 3. Binary comparisons involving variable: varName < N, N > varName, varName == N, etc.
+                foreach (var binary in method.DescendantNodes().OfType<BinaryExpressionSyntax>())
+                {
+                    var kind = binary.Kind();
+                    if (kind != SyntaxKind.LessThanExpression
+                        && kind != SyntaxKind.LessThanOrEqualExpression
+                        && kind != SyntaxKind.GreaterThanExpression
+                        && kind != SyntaxKind.GreaterThanOrEqualExpression
+                        && kind != SyntaxKind.EqualsExpression)
+                        continue;
+
+                    bool leftIsVar = binary.Left is IdentifierNameSyntax lv
+                        && lv.Identifier.Text.Equals(variableName, StringComparison.Ordinal);
+                    bool rightIsVar = binary.Right is IdentifierNameSyntax rv
+                        && rv.Identifier.Text.Equals(variableName, StringComparison.Ordinal);
+                    if (!leftIsVar && !rightIsVar) continue;
+
+                    if (leftIsVar && TryGetIntLiteral(binary.Right, out int rval))
+                    {
+                        if (kind == SyntaxKind.LessThanExpression) UpdateHi(rval - 1);
+                        else if (kind == SyntaxKind.LessThanOrEqualExpression) UpdateHi(rval);
+                        else if (kind == SyntaxKind.GreaterThanExpression) UpdateLo(rval + 1);
+                        else if (kind == SyntaxKind.GreaterThanOrEqualExpression) UpdateLo(rval);
+                        else if (kind == SyntaxKind.EqualsExpression) { UpdateLo(rval); UpdateHi(rval); }
+                    }
+                    else if (rightIsVar && TryGetIntLiteral(binary.Left, out int lval))
+                    {
+                        if (kind == SyntaxKind.LessThanExpression) UpdateLo(lval + 1);
+                        else if (kind == SyntaxKind.LessThanOrEqualExpression) UpdateLo(lval);
+                        else if (kind == SyntaxKind.GreaterThanExpression) UpdateHi(lval - 1);
+                        else if (kind == SyntaxKind.GreaterThanOrEqualExpression) UpdateHi(lval);
+                        else if (kind == SyntaxKind.EqualsExpression) { UpdateLo(lval); UpdateHi(lval); }
+                    }
+                }
+
+                var finalMin = lo ?? -10;
+                var finalMax = hi ?? 10;
+                if (finalMin > finalMax) finalMax = finalMin;
+                return (finalMin, finalMax);
             }
 
             private static List<(string name, string type)> CollectLocalVariables(MethodDeclarationSyntax method)

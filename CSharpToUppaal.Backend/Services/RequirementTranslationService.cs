@@ -139,7 +139,23 @@ namespace CSharpToUppaal.Backend.Services
 
             using var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
             using var response = await _httpClient.PostAsync(endpoint, content, cts.Token).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
+                string detail;
+                try
+                {
+                    var errNode = JsonNode.Parse(errorBody);
+                    detail = errNode?["error"]?.GetValue<string>() ?? errorBody;
+                }
+                catch
+                {
+                    detail = errorBody;
+                }
+                if (string.IsNullOrWhiteSpace(detail))
+                    detail = response.ReasonPhrase ?? response.StatusCode.ToString();
+                throw new HttpRequestException($"{(int)response.StatusCode} {response.ReasonPhrase}: {detail}");
+            }
             var responseJson = await response.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
             var root = JsonNode.Parse(responseJson);
             var messageContent = root?["message"]?["content"]?.GetValue<string>();
