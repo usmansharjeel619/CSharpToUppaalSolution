@@ -59,20 +59,21 @@ namespace CSharpToUppaal.GUI.Controls
 
         private void InitializeEditor()
         {
-            // Set C# syntax highlighting
-            editor.SyntaxHighlighting = HighlightingManager.Instance.GetDefinition("C#");
             editor.ShowLineNumbers = true;
             editor.WordWrap = false;
             editor.FontFamily = new System.Windows.Media.FontFamily("Consolas");
             editor.FontSize = 13;
 
-            // Dark theme colors
+            // Dark background, bright white default text
             editor.Background = new System.Windows.Media.SolidColorBrush(
-                System.Windows.Media.Color.FromRgb(0x25, 0x25, 0x26));
+                System.Windows.Media.Color.FromRgb(0x1E, 0x1E, 0x2E));   // Dracula dark
             editor.Foreground = new System.Windows.Media.SolidColorBrush(
-                System.Windows.Media.Color.FromRgb(0xF1, 0xF1, 0xF1));
+                System.Windows.Media.Color.FromRgb(0xF8, 0xF8, 0xF2));   // Dracula foreground (near white)
             editor.LineNumbersForeground = new System.Windows.Media.SolidColorBrush(
-                System.Windows.Media.Color.FromRgb(0x85, 0x85, 0x85));
+                System.Windows.Media.Color.FromRgb(0x6E, 0x72, 0x8B));   // Dracula comment gray
+
+            // Apply dark-theme syntax highlighting (VS Code / VS Dark palette)
+            ApplyCSharpDarkTheme();
 
             // Setup search panel
             SearchPanel.Install(editor);
@@ -89,6 +90,48 @@ namespace CSharpToUppaal.GUI.Controls
             {
                 editor.Text = Text;
             }
+        }
+
+        private void ApplyCSharpDarkTheme()
+        {
+            var def = HighlightingManager.Instance.GetDefinition("C#");
+            if (def == null) return;
+
+            // Dracula theme — vivid, high-contrast colors designed for dark backgrounds
+            var palette = new Dictionary<string, System.Windows.Media.Color>
+            {
+                // Comments — muted blue-gray (intentionally dim so code stands out)
+                ["Comment"]             = System.Windows.Media.Color.FromRgb(98, 114, 164),
+                // Strings — bright yellow
+                ["String"]              = System.Windows.Media.Color.FromRgb(241, 250, 140),
+                ["Char"]                = System.Windows.Media.Color.FromRgb(241, 250, 140),
+                // Preprocessor — purple
+                ["Preprocessor"]        = System.Windows.Media.Color.FromRgb(189, 147, 249),
+                // Punctuation — near-white
+                ["Punctuation"]         = System.Windows.Media.Color.FromRgb(248, 248, 242),
+                // Value type keywords: int, bool, string, void — bright cyan
+                ["ValueTypeKeywords"]   = System.Windows.Media.Color.FromRgb( 80, 250, 123),
+                // this, base, sizeof, typeof — bright pink
+                ["SemanticKeywords"]    = System.Windows.Media.Color.FromRgb(255, 121, 198),
+                // namespace, using — bright pink
+                ["NamespaceKeywords"]   = System.Windows.Media.Color.FromRgb(255, 121, 198),
+                // get, set, add, remove — bright pink
+                ["GetSetAddRemove"]     = System.Windows.Media.Color.FromRgb(255, 121, 198),
+                // null, true, false — purple
+                ["NullOrValueKeywords"] = System.Windows.Media.Color.FromRgb(189, 147, 249),
+                // public, class, if, return, static, etc. — bright pink
+                ["Keywords"]            = System.Windows.Media.Color.FromRgb(255, 121, 198),
+                // Number literals — bright orange
+                ["NumberLiteral"]       = System.Windows.Media.Color.FromRgb(255, 184, 108),
+            };
+
+            foreach (var color in def.NamedHighlightingColors)
+            {
+                if (palette.TryGetValue(color.Name, out var rgb))
+                    color.Foreground = new SimpleHighlightingBrush(rgb);
+            }
+
+            editor.SyntaxHighlighting = def;
         }
 
         private static void OnTextPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)

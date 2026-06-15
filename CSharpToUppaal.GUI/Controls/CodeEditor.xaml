@@ -6,12 +6,12 @@
     <Grid>
         <avalonEdit:TextEditor x:Name="editor"
                                FontFamily="Consolas"
-                               FontSize="12"
+                               FontSize="13"
                                ShowLineNumbers="True"
                                WordWrap="False"
                                HorizontalScrollBarVisibility="Auto"
                                VerticalScrollBarVisibility="Auto"
-                               Background="{StaticResource BackgroundBrush}"
-                               Foreground="{StaticResource TextPrimaryBrush}"/>
+                               Background="#1E1E2E"
+                               Foreground="#F8F8F2"/>
     </Grid>
 </UserControl>

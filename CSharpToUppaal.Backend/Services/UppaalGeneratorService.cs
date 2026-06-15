@@ -671,7 +671,7 @@ namespace CSharpToUppaal.Backend.Services
                         template.AddTransition(exit, done);
                 }
 
-                template.AddTransition(done, done);
+                template.AddTransition(done, entry);
                 return template.ToTemplate();
             }
 

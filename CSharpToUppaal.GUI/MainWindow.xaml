@@ -191,50 +191,113 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
-                        <RowDefinition Height="120"/>
                     </Grid.RowDefinitions>
 
-                    <!-- Toolbar with white buttons -->
-                    <StackPanel Grid.Row="0" 
-                               Orientation="Horizontal" 
+                    <!-- Toolbar -->
+                    <StackPanel Grid.Row="0"
+                               Orientation="Horizontal"
                                Background="{StaticResource PrimaryMidBrush}"
-                               >
-                        <Button Content="Generate CFG" 
+                               Height="44">
+                        <Button Content="Generate CFG"
                                 Command="{Binding GenerateCfgCommand}"
-                                Style="{StaticResource WhiteButtonStyle}"/>
-                        <Button Content="Export CFG (PNG)" 
+                                Style="{StaticResource WhiteButtonStyle}"
+                                Margin="8,6"/>
+                        <Button Content="Export PNG"
                                 Command="{Binding ExportCfgPngCommand}"
-                                Style="{StaticResource WhiteButtonStyle}"/>
-                        <Separator Margin="8,0" Background="White" Width="2"/>
-                        <TextBlock Text="Method:" 
-                                 VerticalAlignment="Center" 
-                                 Margin="8,0"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                Margin="4,6"/>
+                        <Separator Margin="8,8" Background="{StaticResource BorderBrush}" Width="1"/>
+                        <TextBlock Text="Method:"
+                                 VerticalAlignment="Center"
+                                 Margin="8,0,6,0"
                                  Foreground="White"
-                                 FontWeight="SemiBold"/>
-                        <ComboBox ItemsSource="{Binding Methods}" 
+                                 FontWeight="SemiBold"
+                                 FontSize="13"/>
+                        <ComboBox ItemsSource="{Binding Methods}"
                                 SelectedItem="{Binding SelectedMethod}"
-                                DisplayMemberPath="Name" 
-                                Width="250"
+                                DisplayMemberPath="Name"
+                                Width="220"
                                 VerticalAlignment="Center"
-                                Background="{StaticResource SurfaceBrush}"
-                                Foreground="{StaticResource TextPrimaryBrush}"/>
+                                Margin="0,6"/>
                     </StackPanel>
 
-                    <ScrollViewer Grid.Row="1" 
-                                HorizontalScrollBarVisibility="Auto" 
-                                VerticalScrollBarVisibility="Auto"
-                                Background="{StaticResource BackgroundBrush}">
-                        <Border Background="{StaticResource SurfaceBrush}" 
-                               Margin="20" 
-                               BorderBrush="{StaticResource BorderBrush}" 
-                               BorderThickness="1"
-                               CornerRadius="4">
-                            <Canvas x:Name="CfgCanvas" 
-                                   Width="800" 
-                                   Height="600" 
-                                   Background="{StaticResource SurfaceBrush}"/>
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="160"/>
+                        </Grid.ColumnDefinitions>
+
+                        <ScrollViewer Grid.Column="0"
+                                    HorizontalScrollBarVisibility="Auto"
+                                    VerticalScrollBarVisibility="Auto"
+                                    Background="#1A1A1E">
+                            <Border Background="#1E1E24"
+                                   Margin="16"
+                                   BorderBrush="{StaticResource AccentBrush}"
+                                   BorderThickness="1"
+                                   CornerRadius="4">
+                                <Canvas x:Name="CfgCanvas"
+                                       Width="900"
+                                       Height="700"
+                                       Background="#1E1E24"/>
+                            </Border>
+                        </ScrollViewer>
+
+                        <!-- Legend panel -->
+                        <Border Grid.Column="1"
+                                Background="{StaticResource PrimaryMidBrush}"
+                                BorderBrush="{StaticResource BorderBrush}"
+                                BorderThickness="1,0,0,0"
+                                Padding="12,16">
+                            <StackPanel>
+                                <TextBlock Text="Legend"
+                                           Foreground="White"
+                                           FontSize="13"
+                                           FontWeight="Bold"
+                                           Margin="0,0,0,12"/>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,4">
+                                    <Ellipse Width="18" Height="12" Fill="#27AE60" Margin="0,0,8,0"/>
+                                    <TextBlock Text="Entry" Foreground="#CCC" FontSize="11" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,4">
+                                    <Ellipse Width="18" Height="12" Fill="#C03939" Margin="0,0,8,0"/>
+                                    <TextBlock Text="Exit" Foreground="#CCC" FontSize="11" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,4">
+                                    <Polygon Fill="#2980B9" Margin="0,0,8,0"
+                                             Points="9,0 18,6 9,12 0,6"/>
+                                    <TextBlock Text="Condition" Foreground="#CCC" FontSize="11" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,4">
+                                    <Polygon Fill="#8E44AD" Margin="0,0,8,0"
+                                             Points="9,0 18,6 9,12 0,6"/>
+                                    <TextBlock Text="Loop" Foreground="#CCC" FontSize="11" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,4">
+                                    <Rectangle Width="18" Height="12" Fill="#D35400" RadiusX="2" RadiusY="2" Margin="0,0,8,0"/>
+                                    <TextBlock Text="Return" Foreground="#CCC" FontSize="11" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,4">
+                                    <Rectangle Width="18" Height="12" Fill="#3E3E42" RadiusX="2" RadiusY="2"
+                                               Stroke="#64A0DC" StrokeThickness="1" Margin="0,0,8,0"/>
+                                    <TextBlock Text="Statement" Foreground="#CCC" FontSize="11" VerticalAlignment="Center"/>
+                                </StackPanel>
+
+                                <Separator Background="{StaticResource BorderBrush}" Margin="0,12"/>
+
+                                <TextBlock Text="Tips"
+                                           Foreground="White"
+                                           FontSize="11"
+                                           FontWeight="SemiBold"
+                                           Margin="0,0,0,6"/>
+                                <TextBlock Text="Select a method then click Generate CFG"
+                                           Foreground="#999"
+                                           FontSize="10"
+                                           TextWrapping="Wrap"/>
+                            </StackPanel>
                         </Border>
-                    </ScrollViewer>
+                    </Grid>
                 </Grid>
             </TabItem>
 

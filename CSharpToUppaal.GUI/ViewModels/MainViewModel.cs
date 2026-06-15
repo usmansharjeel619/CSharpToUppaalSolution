@@ -199,12 +199,12 @@ namespace BankSystem
                 var cfg = await _engine.GenerateCfgForMethodAsync(method);
 
                 // Layout parameters
-                double nodeWidth = 120;
-                double nodeHeight = 60;
-                double horizontalSpacing = 200;
-                double verticalSpacing = 100;
-                double startX = 300; // Center starting position
-                double startY = 50;
+                double nodeWidth = 140;
+                double nodeHeight = 64;
+                double horizontalSpacing = 220;
+                double verticalSpacing = 110;
+                double startX = 350; // Center starting position
+                double startY = 60;
 
                 // Calculate positions for nodes with hierarchical layout
                 var nodePositions = new Dictionary<string, Point>();
@@ -309,6 +309,8 @@ namespace BankSystem
                         double arrowTipX = toCenterX - arrowMargin * Math.Cos(angle);
                         double arrowTipY = toCenterY - arrowMargin * Math.Sin(angle);
 
+                        var edgeBrush = new SolidColorBrush(Color.FromRgb(180, 180, 180));
+
                         // Draw line from source to target (stopping before the node)
                         var line = new Line
                         {
@@ -316,19 +318,19 @@ namespace BankSystem
                             Y1 = fromCenterY,
                             X2 = arrowTipX,
                             Y2 = arrowTipY,
-                            Stroke = Brushes.Black,
+                            Stroke = edgeBrush,
                             StrokeThickness = 2
                         };
 
                         _cfgCanvas.Children.Add(line);
 
-                        // Add arrow head (more visible)
-                        var arrowSize = 12;
+                        // Add arrow head
+                        var arrowSize = 13;
 
                         var arrow = new Polygon
                         {
-                            Fill = Brushes.Black,
-                            Stroke = Brushes.Black,
+                            Fill = edgeBrush,
+                            Stroke = edgeBrush,
                             StrokeThickness = 1,
                             Points = new PointCollection
                             {
@@ -348,15 +350,24 @@ namespace BankSystem
                         // Add edge label if present
                         if (!string.IsNullOrEmpty(edge.Label))
                         {
-                            var label = new TextBlock
+                            var labelBg = new Border
                             {
-                                Text = edge.Label,
-                                FontSize = 10,
-                                Background = Brushes.White
+                                Background = new SolidColorBrush(Color.FromArgb(200, 45, 45, 48)),
+                                BorderBrush = new SolidColorBrush(Color.FromRgb(100, 160, 220)),
+                                BorderThickness = new Thickness(1),
+                                CornerRadius = new CornerRadius(3),
+                                Padding = new Thickness(4, 2, 4, 2),
+                                Child = new TextBlock
+                                {
+                                    Text = edge.Label,
+                                    FontSize = 10,
+                                    FontWeight = FontWeights.SemiBold,
+                                    Foreground = new SolidColorBrush(Color.FromRgb(100, 200, 255))
+                                }
                             };
-                            Canvas.SetLeft(label, (fromPos.X + toPos.X) / 2 + nodeWidth / 4);
-                            Canvas.SetTop(label, (fromPos.Y + toPos.Y) / 2 + nodeHeight / 4);
-                            _cfgCanvas.Children.Add(label);
+                            Canvas.SetLeft(labelBg, (fromPos.X + toPos.X) / 2 + nodeWidth / 4);
+                            Canvas.SetTop(labelBg, (fromPos.Y + toPos.Y) / 2 + nodeHeight / 4);
+                            _cfgCanvas.Children.Add(labelBg);
                         }
                     }
                 }
@@ -368,15 +379,50 @@ namespace BankSystem
 
                     var pos = nodePositions[node.Id];
 
-                    // Choose color based on node type
-                    var fillColor = node.Type switch
+                    // Choose fill/stroke colors per node type (dark-theme friendly, saturated fills)
+                    SolidColorBrush fillColor;
+                    SolidColorBrush strokeColor;
+                    SolidColorBrush labelColor;
+                    SolidColorBrush codeColor;
+                    switch (node.Type)
                     {
-                        CSharpToUppaal.Backend.Models.NodeType.Entry => Brushes.LightGreen,
-                        CSharpToUppaal.Backend.Models.NodeType.Exit => Brushes.LightCoral,
-                        CSharpToUppaal.Backend.Models.NodeType.Condition => Brushes.LightBlue,
-                        CSharpToUppaal.Backend.Models.NodeType.Loop => Brushes.LightYellow,
-                        _ => Brushes.LightGray
-                    };
+                        case CSharpToUppaal.Backend.Models.NodeType.Entry:
+                            fillColor  = new SolidColorBrush(Color.FromRgb(39, 174, 96));   // green
+                            strokeColor = new SolidColorBrush(Color.FromRgb(20, 120, 60));
+                            labelColor = new SolidColorBrush(Colors.White);
+                            codeColor  = new SolidColorBrush(Color.FromRgb(200, 255, 220));
+                            break;
+                        case CSharpToUppaal.Backend.Models.NodeType.Exit:
+                            fillColor  = new SolidColorBrush(Color.FromRgb(192, 57, 57));   // red
+                            strokeColor = new SolidColorBrush(Color.FromRgb(130, 30, 30));
+                            labelColor = new SolidColorBrush(Colors.White);
+                            codeColor  = new SolidColorBrush(Color.FromRgb(255, 200, 200));
+                            break;
+                        case CSharpToUppaal.Backend.Models.NodeType.Condition:
+                            fillColor  = new SolidColorBrush(Color.FromRgb(41, 128, 185));  // blue
+                            strokeColor = new SolidColorBrush(Color.FromRgb(21, 80, 130));
+                            labelColor = new SolidColorBrush(Colors.White);
+                            codeColor  = new SolidColorBrush(Color.FromRgb(190, 225, 255));
+                            break;
+                        case CSharpToUppaal.Backend.Models.NodeType.Loop:
+                            fillColor  = new SolidColorBrush(Color.FromRgb(142, 68, 173));  // purple
+                            strokeColor = new SolidColorBrush(Color.FromRgb(90, 30, 120));
+                            labelColor = new SolidColorBrush(Colors.White);
+                            codeColor  = new SolidColorBrush(Color.FromRgb(230, 200, 255));
+                            break;
+                        case CSharpToUppaal.Backend.Models.NodeType.Return:
+                            fillColor  = new SolidColorBrush(Color.FromRgb(211, 84, 0));    // orange
+                            strokeColor = new SolidColorBrush(Color.FromRgb(140, 50, 0));
+                            labelColor = new SolidColorBrush(Colors.White);
+                            codeColor  = new SolidColorBrush(Color.FromRgb(255, 220, 180));
+                            break;
+                        default:
+                            fillColor  = new SolidColorBrush(Color.FromRgb(62, 62, 66));    // dark gray
+                            strokeColor = new SolidColorBrush(Color.FromRgb(100, 160, 220));
+                            labelColor = new SolidColorBrush(Color.FromRgb(241, 241, 241));
+                            codeColor  = new SolidColorBrush(Color.FromRgb(180, 200, 220));
+                            break;
+                    }
 
                     // Draw node shape
                     Shape shape;
@@ -394,7 +440,7 @@ namespace BankSystem
                                 new Point(pos.X, pos.Y + nodeHeight / 2)
                             },
                             Fill = fillColor,
-                            Stroke = Brushes.Black,
+                            Stroke = strokeColor,
                             StrokeThickness = 2
                         };
                     }
@@ -407,24 +453,24 @@ namespace BankSystem
                             Width = nodeWidth,
                             Height = nodeHeight,
                             Fill = fillColor,
-                            Stroke = Brushes.Black,
-                            StrokeThickness = 2
+                            Stroke = strokeColor,
+                            StrokeThickness = 2.5
                         };
                         Canvas.SetLeft(shape, pos.X);
                         Canvas.SetTop(shape, pos.Y);
                     }
                     else
                     {
-                        // Rectangle for other nodes
+                        // Rounded rectangle for other nodes
                         shape = new Rectangle
                         {
                             Width = nodeWidth,
                             Height = nodeHeight,
                             Fill = fillColor,
-                            Stroke = Brushes.Black,
+                            Stroke = strokeColor,
                             StrokeThickness = 2,
-                            RadiusX = 5,
-                            RadiusY = 5
+                            RadiusX = 6,
+                            RadiusY = 6
                         };
                         Canvas.SetLeft(shape, pos.X);
                         Canvas.SetTop(shape, pos.Y);
@@ -438,32 +484,32 @@ namespace BankSystem
                         Text = node.Label,
                         FontSize = 12,
                         FontWeight = FontWeights.Bold,
-                        Foreground = Brushes.Black,
+                        Foreground = labelColor,
                         TextAlignment = TextAlignment.Center,
                         Width = nodeWidth,
                         TextWrapping = TextWrapping.Wrap
                     };
                     Canvas.SetLeft(text, pos.X);
-                    Canvas.SetTop(text, pos.Y + 5);
+                    Canvas.SetTop(text, pos.Y + 6);
                     _cfgCanvas.Children.Add(text);
 
                     // Add node code (truncated)
                     if (!string.IsNullOrEmpty(node.Code))
                     {
-                        var codeText = node.Code.Length > 20 ?
-                            node.Code.Substring(0, 17) + "..." : node.Code;
+                        var codeText = node.Code.Length > 22 ?
+                            node.Code.Substring(0, 19) + "..." : node.Code;
 
                         var code = new TextBlock
                         {
                             Text = codeText,
                             FontSize = 9,
-                            Foreground = Brushes.Black,
+                            Foreground = codeColor,
                             TextAlignment = TextAlignment.Center,
                             Width = nodeWidth,
-                            TextWrapping = TextWrapping.Wrap
+                            TextWrapping = TextWrapping.NoWrap
                         };
                         Canvas.SetLeft(code, pos.X);
-                        Canvas.SetTop(code, pos.Y + 25);
+                        Canvas.SetTop(code, pos.Y + 28);
                         _cfgCanvas.Children.Add(code);
                     }
                 }
