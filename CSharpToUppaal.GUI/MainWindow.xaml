@@ -154,6 +154,14 @@
                                 Command="{Binding RunAnalysisCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 Margin="8"/>
+                        <Button Content="Select All"
+                                Command="{Binding SelectAllFunctionsCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                Margin="4,8"/>
+                        <Button Content="Deselect All"
+                                Command="{Binding DeselectAllFunctionsCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                Margin="4,8"/>
                         <TextBlock Text="{Binding GenerationReportText}"
                                    Foreground="White"
                                    VerticalAlignment="Center"

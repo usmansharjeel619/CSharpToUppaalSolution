@@ -1258,6 +1258,20 @@ namespace BankSystem
         }
 
         [RelayCommand]
+        private void SelectAllFunctions()
+        {
+            foreach (var f in FunctionSelections)
+                f.IsSelected = true;
+        }
+
+        [RelayCommand]
+        private void DeselectAllFunctions()
+        {
+            foreach (var f in FunctionSelections)
+                f.IsSelected = false;
+        }
+
+        [RelayCommand]
         private async Task AnalyzeCode()
         {
             try
