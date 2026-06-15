@@ -344,6 +344,8 @@ namespace CSharpToUppaal.Backend.Services
             private readonly HashSet<string> _generatedFunctionIds = new(StringComparer.Ordinal);
             private readonly List<GeneratedQuery> _queries = new();
             private int _globalId;
+            private bool _generateDriver;
+            private readonly Dictionary<string, (string startChan, string doneChan)> _driverChannels = new(StringComparer.Ordinal);
 
             public SemanticUppaalBuilder(
                 CSharpSemanticAnalysisResult analysis,
@@ -394,15 +396,55 @@ namespace CSharpToUppaal.Backend.Services
                 if (roots.Count == 0 && _included.Count > 0)
                     roots.Add(_included[0]);
 
-                foreach (var root in roots)
+                // Generate a Driver process when no Main/entry-point function exists
+                var hasMain = _included.Any(f => f.Name.Equals("Main", StringComparison.OrdinalIgnoreCase));
+                _generateDriver = !hasMain && roots.Count > 0;
+
+                // Precompute template names so Driver can reference them before templates are built
+                var rootInfos = roots.Select(r => (
+                    Function: r,
+                    TemplateName: MakeUniqueIdentifier($"P_{r.DisplayName}", _usedTemplateNames)
+                )).ToList();
+
+                if (_generateDriver)
                 {
-                    var template = BuildRootTemplate(root);
+                    globalDeclaration.AppendLine("// Driver synchronization channels");
+                    foreach (var (func, _) in rootInfos)
+                    {
+                        var startChan = $"start_{Sanitize(func.DisplayName)}";
+                        var doneChan = $"done_{Sanitize(func.DisplayName)}";
+                        _driverChannels[func.Id] = (startChan, doneChan);
+                        globalDeclaration.AppendLine($"chan {startChan};");
+                        globalDeclaration.AppendLine($"chan {doneChan};");
+                    }
+                    globalDeclaration.AppendLine();
+                }
+
+                foreach (var (root, templateName) in rootInfos)
+                {
+                    var template = BuildRootTemplate(root, templateName);
                     model.Templates.Add(template);
                     _queries.Add(new GeneratedQuery
                     {
-                        Name = $"Reach_{template.Name}_Done",
-                        Formula = $"E<> {template.Name}.Done",
-                        Comment = $"Reachability: {template.Name} can finish.",
+                        Name = $"Reach_{templateName}_Done",
+                        Formula = $"E<> {templateName}.Done",
+                        Comment = $"Reachability: {templateName} can finish.",
+                        Source = "auto"
+                    });
+                }
+
+                if (_generateDriver && rootInfos.Count > 0)
+                {
+                    var driverProcesses = rootInfos
+                        .Select(r => (r.TemplateName, _driverChannels[r.Function.Id].startChan, _driverChannels[r.Function.Id].doneChan))
+                        .ToList();
+                    var driverTemplate = BuildDriverTemplate(driverProcesses);
+                    model.Templates.Add(driverTemplate);
+                    _queries.Add(new GeneratedQuery
+                    {
+                        Name = "Reach_Driver_AllDone",
+                        Formula = $"E<> {driverTemplate.Name}.DriverDone",
+                        Comment = "All processes have been sequenced through at least once by the driver.",
                         Source = "auto"
                     });
                 }
@@ -605,10 +647,10 @@ namespace CSharpToUppaal.Backend.Services
                 return $"{returnType} {_uppaalFunctionNames[function.Id]}({parameters}){{{body}}}";
             }
 
-            private UppaalTemplate BuildRootTemplate(FunctionDescriptor function)
+            private UppaalTemplate BuildRootTemplate(FunctionDescriptor function, string templateName)
             {
                 var mode = ModeOf(function);
-                var template = new TemplateBuilder(MakeUniqueIdentifier($"P_{function.DisplayName}", _usedTemplateNames), () => _globalId++);
+                var template = new TemplateBuilder(templateName, () => _globalId++);
                 var method = _methodById.TryGetValue(function.Id, out var foundMethod) ? foundMethod : null;
 
                 template.Declarations.AppendLine($"// Root function: {function.Signature}");
@@ -638,10 +680,33 @@ namespace CSharpToUppaal.Backend.Services
                     }
                 }
 
-                var entry = template.AddLocation("Entry", initial: true);
-                var done = template.AddLocation("Done");
+                // When a Driver process is generated, wrap the process body with
+                // channel-based synchronization so the Driver can sequence execution.
+                var useDriverSync = false;
+                var driverStartChan = string.Empty;
+                var driverDoneChan = string.Empty;
+                if (_generateDriver && _driverChannels.TryGetValue(function.Id, out var driverChans))
+                {
+                    useDriverSync = true;
+                    driverStartChan = driverChans.startChan;
+                    driverDoneChan = driverChans.doneChan;
+                }
 
-                var start = entry;
+                string initialLocId, entryLocId;
+                if (useDriverSync)
+                {
+                    initialLocId = template.AddLocation("Waiting", initial: true);
+                    entryLocId = template.AddLocation("Entry");
+                    template.AddTransition(initialLocId, entryLocId, synchronization: $"{driverStartChan}?");
+                }
+                else
+                {
+                    entryLocId = template.AddLocation("Entry", initial: true);
+                    initialLocId = entryLocId;
+                }
+
+                var done = template.AddLocation("Done");
+                var start = entryLocId;
                 var initSelects = new List<string>();
                 var initUpdates = new List<string>();
                 foreach (var parameter in function.Parameters)
@@ -655,7 +720,7 @@ namespace CSharpToUppaal.Backend.Services
                 if (initSelects.Count > 0)
                 {
                     var inputs = template.AddLocation("Inputs");
-                    template.AddTransition(entry, inputs, select: string.Join(", ", initSelects), update: string.Join(", ", initUpdates));
+                    template.AddTransition(entryLocId, inputs, select: string.Join(", ", initSelects), update: string.Join(", ", initUpdates));
                     start = inputs;
                 }
 
@@ -677,8 +742,38 @@ namespace CSharpToUppaal.Backend.Services
                         template.AddTransition(exit, done);
                 }
 
-                template.AddTransition(done, entry);
+                if (useDriverSync)
+                    template.AddTransition(done, initialLocId, synchronization: $"{driverDoneChan}!");
+                else
+                    template.AddTransition(done, entryLocId);
+
                 return template.ToTemplate();
+            }
+
+            private UppaalTemplate BuildDriverTemplate(List<(string templateName, string startChan, string doneChan)> processes)
+            {
+                var driver = new TemplateBuilder(MakeUniqueIdentifier("Driver", _usedTemplateNames), () => _globalId++);
+                driver.Declarations.AppendLine("// Auto-generated driver: sequences all process templates in order");
+
+                var initial = driver.AddLocation("DriverEntry", initial: true);
+                var prev = initial;
+
+                foreach (var (tmplName, startChan, doneChan) in processes)
+                {
+                    var safe = Sanitize(tmplName);
+                    var waiting = driver.AddLocation($"Waiting_{safe}");
+                    driver.AddTransition(prev, waiting, synchronization: $"{startChan}!");
+
+                    var after = driver.AddLocation($"After_{safe}");
+                    driver.AddTransition(waiting, after, synchronization: $"{doneChan}?");
+                    prev = after;
+                }
+
+                var driverDone = driver.AddLocation("DriverDone");
+                driver.AddTransition(prev, driverDone);
+                driver.AddTransition(driverDone, initial);
+
+                return driver.ToTemplate();
             }
 
             private (string select, string update) BuildRootCodeBlockUpdate(FunctionDescriptor function, FunctionModelingMode mode)
@@ -980,7 +1075,7 @@ namespace CSharpToUppaal.Backend.Services
                     return x - Math.Max(12, name.Length * 3);
                 }
 
-                public void AddTransition(string source, string target, string guard = "", string update = "", string select = "")
+                public void AddTransition(string source, string target, string guard = "", string update = "", string select = "", string synchronization = "")
                 {
                     _transitions.Add(new UppaalTransition
                     {
@@ -988,7 +1083,8 @@ namespace CSharpToUppaal.Backend.Services
                         Target = target,
                         Guard = guard,
                         Update = update,
-                        Select = select
+                        Select = select,
+                        Synchronization = synchronization
                     });
                 }
 

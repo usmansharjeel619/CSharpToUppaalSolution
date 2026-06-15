@@ -148,8 +148,12 @@ namespace BankSystem
             RefreshSelectedMethods();
         }
 
-        [ObservableProperty]
-        private ObservableCollection<CSharpToUppaal.Backend.Models.MethodInfo> _selectedMethods = new();
+        private ObservableCollection<MethodInfo> _selectedMethods = [];
+        public ObservableCollection<MethodInfo> SelectedMethods
+        {
+            get => _selectedMethods;
+            set => SetProperty(ref _selectedMethods, value);
+        }
 
         [ObservableProperty]
         private CSharpToUppaal.Backend.Models.MethodInfo _selectedMethod;
@@ -1329,16 +1333,25 @@ namespace BankSystem
                         .ToList();
                 }
 
+                var settings = _settings.ToRequirementSettings();
                 var interpretations = await service.InterpretAsync(
                     RequirementsText,
                     context,
-                    _settings.ToRequirementSettings());
+                    settings);
 
                 GeneratedQueries.Clear();
                 foreach (var query in interpretations.SelectMany(i => i.GeneratedQueries))
                     GeneratedQueries.Add(query);
 
-                StatusMessage = $"Interpreted requirements: {GeneratedQueries.Count} query/query candidate(s)";
+                // Report which path was used and surface any Ollama error
+                var source = settings.Enabled
+                    ? (service.LastUsedSource == "ollama" ? "Ollama AI" : "rule-based fallback")
+                    : "rule-based";
+                var errorNote = string.IsNullOrEmpty(service.LastError) ? string.Empty : $"  ⚠ {service.LastError}";
+                StatusMessage = $"Requirements interpreted via {source}: {GeneratedQueries.Count} query/queries generated.{errorNote}";
+
+                if (!string.IsNullOrEmpty(service.LastError))
+                    MessageBox.Show(service.LastError, "Ollama Fallback", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             catch (Exception ex)
             {

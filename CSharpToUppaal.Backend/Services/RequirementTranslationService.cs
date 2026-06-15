@@ -170,11 +170,12 @@ namespace CSharpToUppaal.Backend.Services
 
                 if (!string.IsNullOrWhiteSpace(formula) && interpretation.Status == "Mapped")
                 {
+                    var queryName = BuildQueryName(text, results.Count + 1);
                     interpretation.GeneratedQueries.Add(new GeneratedQuery
                     {
-                        Name = $"Req_{results.Count + 1}",
+                        Name = queryName,
                         Formula = formula,
-                        Comment = comment,
+                        Comment = string.IsNullOrWhiteSpace(comment) ? text : comment,
                         Source = "ollama",
                         IsEditable = true,
                         IsValidated = true
@@ -279,6 +280,17 @@ namespace CSharpToUppaal.Backend.Services
                 result = result.Replace(variable, Sanitize(variable), StringComparison.OrdinalIgnoreCase);
 
             return result.Trim().TrimEnd('.');
+        }
+
+        private static string BuildQueryName(string requirementText, int index)
+        {
+            var words = requirementText
+                .Split(new[] { ' ', '\t', '.', ',', ':', ';', '!' }, StringSplitOptions.RemoveEmptyEntries)
+                .Where(w => w.Length > 3)
+                .Take(3)
+                .Select(w => char.ToUpperInvariant(w[0]) + w[1..].ToLowerInvariant());
+            var suffix = string.Concat(words);
+            return string.IsNullOrWhiteSpace(suffix) ? $"Req_{index}" : $"Req_{Sanitize(suffix)}";
         }
 
         private static bool ValidateFormula(string formula, RequirementTranslationContext context)
