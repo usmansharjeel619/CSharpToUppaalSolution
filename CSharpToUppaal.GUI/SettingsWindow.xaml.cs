@@ -36,7 +36,7 @@ namespace CSharpToUppaal.GUI
             if (int.TryParse(OllamaTimeoutTextBox.Text, out var timeout) && timeout > 0)
                 Settings.OllamaTimeoutSeconds = timeout;
             else
-                Settings.OllamaTimeoutSeconds = 45;
+                Settings.OllamaTimeoutSeconds = 120;
 
             AppSettingsService.Save(Settings);
             DialogResult = true;
