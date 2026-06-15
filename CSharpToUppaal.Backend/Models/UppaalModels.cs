@@ -303,6 +303,19 @@ namespace CSharpToUppaal.Backend.Models
 
             return $"int[{Min},{Max}]";
         }
+
+        public string ToUppaalDeclType()
+        {
+            if (IsBoolean || Type.Equals("bool", StringComparison.OrdinalIgnoreCase))
+                return "bool";
+
+            return $"int[{Min},{Max}]";
+        }
+
+        public string DefaultValue()
+        {
+            return IsBoolean || Type.Equals("bool", StringComparison.OrdinalIgnoreCase) ? "false" : "0";
+        }
     }
 
     public class TranslationAssumption

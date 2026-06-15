@@ -35,12 +35,16 @@ namespace CSharpToUppaal.Backend.Services
             _httpClient = httpClient ?? new HttpClient();
         }
 
+        public string LastUsedSource { get; private set; } = "rules";
+        public string LastError { get; private set; } = string.Empty;
+
         public async Task<List<RequirementInterpretation>> InterpretAsync(
             string requirementsText,
             RequirementTranslationContext context,
             OllamaRequirementSettings settings,
             CancellationToken cancellationToken = default)
         {
+            LastError = string.Empty;
             var lines = SplitRequirements(requirementsText);
             if (lines.Count == 0)
                 return new List<RequirementInterpretation>();
@@ -52,14 +56,20 @@ namespace CSharpToUppaal.Backend.Services
                     var ollama = await TryInterpretWithOllamaAsync(lines, context, settings, cancellationToken)
                         .ConfigureAwait(false);
                     if (ollama.Count > 0)
+                    {
+                        LastUsedSource = "ollama";
                         return ollama;
+                    }
+
+                    LastError = "Ollama returned no results — falling back to rules.";
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // Fall back to deterministic rules. The generated model still carries explicit assumptions elsewhere.
+                    LastError = $"Ollama unavailable ({ex.Message}) — falling back to rules.";
                 }
             }
 
+            LastUsedSource = "rules";
             return lines.Select(line => InterpretWithRules(line, context)).ToList();
         }
 

@@ -10,7 +10,7 @@
         xmlns:models="clr-namespace:CSharpToUppaal.Backend.Models;assembly=CSharpToUppaal.Backend"
         xmlns:sys="clr-namespace:System;assembly=System.Runtime"
         mc:Ignorable="d"
-        Title="C# to UPPAAL Model Generator" 
+        Title="C# to UPPAAL Model Generator"
         Height="900" Width="1600"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource BackgroundBrush}">
@@ -31,8 +31,7 @@
                 <x:Type TypeName="models:FunctionModelingMode"/>
             </ObjectDataProvider.MethodParameters>
         </ObjectDataProvider>
-        
-        <!-- Button Style with White Foreground -->
+
         <Style x:Key="WhiteButtonStyle" TargetType="Button">
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="Background" Value="{StaticResource PrimaryMidBrush}"/>
@@ -75,22 +74,22 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Simplified Header -->
+        <!-- Header -->
         <Border Grid.Row="0" Background="{StaticResource PrimaryDarkBrush}" Padding="12">
             <DockPanel>
-                <TextBlock DockPanel.Dock="Left" 
-                          Text="C# to UPPAAL Model Generator" 
-                          FontSize="20" FontWeight="Bold" 
-                          Foreground="White" 
-                          VerticalAlignment="Center" 
+                <TextBlock DockPanel.Dock="Left"
+                          Text="C# to UPPAAL Model Generator"
+                          FontSize="20" FontWeight="Bold"
+                          Foreground="White"
+                          VerticalAlignment="Center"
                           Margin="8,0"/>
 
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-                    <Button Content="Settings" 
+                    <Button Content="Settings"
                             Command="{Binding OpenSettingsCommand}"
                             Style="{StaticResource WhiteButtonStyle}"
                             Margin="8,0"/>
-                    <Button Content="Clear All" 
+                    <Button Content="Clear All"
                             Command="{Binding ClearAllCommand}"
                             Style="{StaticResource WhiteButtonStyle}"
                             Margin="8,0"/>
@@ -98,44 +97,48 @@
             </DockPanel>
         </Border>
 
-        <!-- Main Content Area (No Left Panel) -->
-        <TabControl Grid.Row="1" 
+        <!-- Tab order follows the user workflow:
+             1. Code Editor  2. Functions  3. UPPAAL Model  4. Model Info
+             5. Requirements  6. CFG Visualization  7. Analysis  8. Layout Fixer -->
+        <TabControl Grid.Row="1"
                    Background="{StaticResource BackgroundBrush}"
                    BorderThickness="0">
 
-            <!-- Code Editor Tab -->
+            <!-- ═══════════════════════════════════════════════════
+                 1. CODE EDITOR  – load / write C# source
+                 ═══════════════════════════════════════════════════ -->
             <TabItem Header="Code Editor">
                 <Grid Background="{StaticResource BackgroundBrush}">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
-                        <RowDefinition Height="90"/>
                     </Grid.RowDefinitions>
 
-                    <!-- Toolbar with white buttons -->
-                    <StackPanel Grid.Row="0" 
-                               Orientation="Horizontal" 
+                    <StackPanel Grid.Row="0"
+                               Orientation="Horizontal"
                                Background="{StaticResource PrimaryMidBrush}">
-                        <Button Content="Load File" 
+                        <Button Content="Load File"
                                 Command="{Binding LoadFileCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 Margin="8"/>
-                        <Button Content="Parse" 
+                        <Button Content="Parse"
                                 Command="{Binding ParseCodeCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 Margin="4"/>
-                        <Button Content="Clear All" 
-                                Command="{Binding ClearCodeCommand}"
+                        <Button Content="Clear All"
+                                Command="{Binding ClearAllCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 Margin="4"/>
                     </StackPanel>
 
-                    <controls:CodeEditor Grid.Row="1" 
+                    <controls:CodeEditor Grid.Row="1"
                                        Text="{Binding SourceCode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                 </Grid>
             </TabItem>
 
-            <!-- Function Selection Tab -->
+            <!-- ═══════════════════════════════════════════════════
+                 2. FUNCTIONS  – select which functions to include
+                 ═══════════════════════════════════════════════════ -->
             <TabItem Header="Functions">
                 <Grid Background="{StaticResource BackgroundBrush}">
                     <Grid.RowDefinitions>
@@ -157,6 +160,7 @@
                                    Margin="12,0"/>
                     </StackPanel>
 
+                    <!-- Checked functions will be used for CFG and UPPAAL model generation -->
                     <DataGrid Grid.Row="1"
                               ItemsSource="{Binding FunctionSelections}"
                               AutoGenerateColumns="False"
@@ -164,7 +168,7 @@
                               GridLinesVisibility="Horizontal"
                               HeadersVisibility="Column">
                         <DataGrid.Columns>
-                            <DataGridCheckBoxColumn Header="Use" Binding="{Binding IsSelected, Mode=TwoWay}" Width="60"/>
+                            <DataGridCheckBoxColumn Header="Include" Binding="{Binding IsSelected, Mode=TwoWay}" Width="70"/>
                             <DataGridTextColumn Header="Function" Binding="{Binding Name}" Width="220" IsReadOnly="True"/>
                             <DataGridTextColumn Header="Signature" Binding="{Binding Signature}" Width="280" IsReadOnly="True"/>
                             <DataGridComboBoxColumn Header="Mode"
@@ -185,7 +189,204 @@
                 </Grid>
             </TabItem>
 
-            <!-- CFG Visualization Tab -->
+            <!-- ═══════════════════════════════════════════════════
+                 3. UPPAAL MODEL  – generate, review and export
+                 ═══════════════════════════════════════════════════ -->
+            <TabItem Header="UPPAAL Model">
+                <Grid Background="{StaticResource BackgroundBrush}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0"
+                               Orientation="Horizontal"
+                               Background="{StaticResource PrimaryMidBrush}">
+                        <Button Content="Generate UPPAAL Model"
+                                Command="{Binding GenerateModelCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"/>
+                        <Button Content="Export"
+                                Command="{Binding ExportModelCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"/>
+                        <Separator Margin="8,0" Background="White" Width="2"/>
+                        <TextBlock Text="{Binding ReadinessStatus}"
+                                 VerticalAlignment="Center"
+                                 Margin="8,0"
+                                 Foreground="{StaticResource TextPrimaryBrush}"
+                                 FontWeight="SemiBold"/>
+                        <Separator Margin="8,0" Background="White" Width="2"/>
+                        <TextBlock Text="Model Name:"
+                                 VerticalAlignment="Center"
+                                 Margin="8,0"
+                                 Foreground="White"
+                                 FontWeight="SemiBold"/>
+                        <TextBox Text="{Binding ModelName, UpdateSourceTrigger=PropertyChanged}"
+                               Width="200"
+                               VerticalAlignment="Center"
+                               Padding="6,4"
+                               Background="{StaticResource SurfaceBrush}"
+                               Foreground="{StaticResource TextPrimaryBrush}"/>
+                    </StackPanel>
+
+                    <TabControl Grid.Row="1"
+                               Background="{StaticResource BackgroundBrush}"
+                               BorderThickness="0">
+                        <TabItem Header="XML View">
+                            <TextBox FontFamily="Consolas"
+                                   FontSize="12"
+                                   Text="{Binding UppaalXml, Mode=TwoWay}"
+                                   AcceptsReturn="True"
+                                   AcceptsTab="True"
+                                   VerticalScrollBarVisibility="Auto"
+                                   HorizontalScrollBarVisibility="Auto"
+                                   IsReadOnly="{Binding IsXmlReadOnly}"
+                                   Background="{StaticResource SurfaceBrush}"
+                                   Foreground="{StaticResource TextPrimaryBrush}"
+                                   Padding="10"/>
+                        </TabItem>
+                        <TabItem Header="Readiness">
+                            <Grid Background="{StaticResource BackgroundBrush}">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0"
+                                           Text="{Binding ReadinessStatus}"
+                                           Foreground="{StaticResource TextPrimaryBrush}"
+                                           FontWeight="SemiBold"
+                                           Margin="10,8"/>
+                                <DataGrid Grid.Row="1"
+                                          ItemsSource="{Binding CompatibilityIssues}"
+                                          AutoGenerateColumns="False"
+                                          CanUserAddRows="False"
+                                          IsReadOnly="True"
+                                          HeadersVisibility="Column"
+                                          Margin="8">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="100"/>
+                                        <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="150"/>
+                                        <DataGridTextColumn Header="Position" Binding="{Binding Position}" Width="260"/>
+                                        <DataGridTextColumn Header="Message" Binding="{Binding Message}" Width="*"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </Grid>
+                        </TabItem>
+                    </TabControl>
+                </Grid>
+            </TabItem>
+
+            <!-- ═══════════════════════════════════════════════════
+                 4. MODEL INFO  – what the tool assumed / translated
+                    • Translation Warnings: constructs that couldn't
+                      be perfectly mapped (stubs, unknown calls, etc.)
+                    • Variable Domains: the value ranges used for each
+                      parameter — edit Min/Max before regenerating
+                 ═══════════════════════════════════════════════════ -->
+            <TabItem Header="Model Info">
+                <Grid Background="{StaticResource BackgroundBrush}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <GroupBox Grid.Row="0" Header="Translation Warnings" Foreground="White" Margin="8">
+                        <DataGrid ItemsSource="{Binding Assumptions}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  GridLinesVisibility="Horizontal"
+                                  HeadersVisibility="Column">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="100" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="150" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Symbol" Binding="{Binding SymbolName}" Width="220" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Location" Binding="{Binding Location}" Width="220" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Message" Binding="{Binding Message}" Width="*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </GroupBox>
+
+                    <GroupBox Grid.Row="1" Header="Variable Domains  (edit Min / Max then re-generate to apply)" Foreground="White" Margin="8">
+                        <DataGrid ItemsSource="{Binding Domains}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  GridLinesVisibility="Horizontal"
+                                  HeadersVisibility="Column">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="260"/>
+                                <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="90"/>
+                                <DataGridTextColumn Header="Min" Binding="{Binding Min}" Width="80"/>
+                                <DataGridTextColumn Header="Max" Binding="{Binding Max}" Width="80"/>
+                                <DataGridCheckBoxColumn Header="Bool" Binding="{Binding IsBoolean}" Width="70"/>
+                                <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </GroupBox>
+                </Grid>
+            </TabItem>
+
+            <!-- ═══════════════════════════════════════════════════
+                 5. REQUIREMENTS  – natural-language → CTL queries
+                 ═══════════════════════════════════════════════════ -->
+            <TabItem Header="Requirements">
+                <Grid Background="{StaticResource BackgroundBrush}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="180"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0"
+                                Orientation="Horizontal"
+                                Background="{StaticResource PrimaryMidBrush}">
+                        <Button Content="Interpret Requirements"
+                                Command="{Binding InterpretRequirementsCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                Margin="8"/>
+                        <Button Content="Load from File"
+                                Command="{Binding LoadRequirementsFromFileCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                Margin="4"
+                                ToolTip="Load requirements text from a .txt or .md file"/>
+                        <TextBlock Text="Type requirements in plain English, then click Interpret Requirements to generate CTL queries."
+                                   Foreground="#AAA"
+                                   FontSize="11"
+                                   VerticalAlignment="Center"
+                                   Margin="12,0"/>
+                    </StackPanel>
+
+                    <TextBox Grid.Row="1"
+                             FontFamily="Consolas"
+                             FontSize="13"
+                             Text="{Binding RequirementsText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             AcceptsReturn="True"
+                             VerticalScrollBarVisibility="Auto"
+                             HorizontalScrollBarVisibility="Auto"
+                             Background="{StaticResource SurfaceBrush}"
+                             Foreground="{StaticResource TextPrimaryBrush}"
+                             Padding="10"
+                             Margin="8"/>
+
+                    <DataGrid Grid.Row="2"
+                              ItemsSource="{Binding GeneratedQueries}"
+                              AutoGenerateColumns="False"
+                              CanUserAddRows="False"
+                              GridLinesVisibility="Horizontal"
+                              HeadersVisibility="Column"
+                              Margin="8">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="170"/>
+                            <DataGridTextColumn Header="Formula" Binding="{Binding Formula}" Width="360"/>
+                            <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="90" IsReadOnly="True"/>
+                            <DataGridCheckBoxColumn Header="Valid" Binding="{Binding IsValidated}" Width="70" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Comment" Binding="{Binding Comment}" Width="*"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- ═══════════════════════════════════════════════════
+                 6. CFG VISUALIZATION  – only checked functions shown
+                 ═══════════════════════════════════════════════════ -->
             <TabItem Header="CFG Visualization">
                 <Grid Background="{StaticResource BackgroundBrush}">
                     <Grid.RowDefinitions>
@@ -193,7 +394,6 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <!-- Toolbar -->
                     <StackPanel Grid.Row="0"
                                Orientation="Horizontal"
                                Background="{StaticResource PrimaryMidBrush}"
@@ -213,7 +413,8 @@
                                  Foreground="White"
                                  FontWeight="SemiBold"
                                  FontSize="13"/>
-                        <ComboBox ItemsSource="{Binding Methods}"
+                        <!-- Only functions checked in the Functions tab appear here -->
+                        <ComboBox ItemsSource="{Binding SelectedMethods}"
                                 SelectedItem="{Binding SelectedMethod}"
                                 DisplayMemberPath="Name"
                                 Width="220"
@@ -291,7 +492,7 @@
                                            FontSize="11"
                                            FontWeight="SemiBold"
                                            Margin="0,0,0,6"/>
-                                <TextBlock Text="Select a method then click Generate CFG"
+                                <TextBlock Text="Only functions checked in the Functions tab appear in the dropdown."
                                            Foreground="#999"
                                            FontSize="10"
                                            TextWrapping="Wrap"/>
@@ -301,142 +502,9 @@
                 </Grid>
             </TabItem>
 
-            <!-- UPPAAL Model Tab -->
-            <TabItem Header="UPPAAL Model">
-                <Grid Background="{StaticResource BackgroundBrush}">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-
-                    <!-- Toolbar with white buttons -->
-                    <StackPanel Grid.Row="0" 
-                               Orientation="Horizontal" 
-                               Background="{StaticResource PrimaryMidBrush}"
-                               >
-                        <Button Content="Generate UPPAAL Model" 
-                                Command="{Binding GenerateModelCommand}"
-                                Style="{StaticResource WhiteButtonStyle}"/>
-                        <Button Content="Export" 
-                                Command="{Binding ExportModelCommand}"
-                                Style="{StaticResource WhiteButtonStyle}"/>
-                        <Separator Margin="8,0" Background="White" Width="2"/>
-                        <TextBlock Text="{Binding ReadinessStatus}"
-                                 VerticalAlignment="Center"
-                                 Margin="8,0"
-                                 Foreground="{StaticResource TextPrimaryBrush}"
-                                 FontWeight="SemiBold"/>
-                        <Separator Margin="8,0" Background="White" Width="2"/>
-                        <TextBlock Text="Model Name:" 
-                                 VerticalAlignment="Center" 
-                                 Margin="8,0"
-                                 Foreground="White"
-                                 FontWeight="SemiBold"/>
-                        <TextBox Text="{Binding ModelName, UpdateSourceTrigger=PropertyChanged}" 
-                               Width="200"
-                               VerticalAlignment="Center"
-                               Padding="6,4"
-                               Background="{StaticResource SurfaceBrush}"
-                               Foreground="{StaticResource TextPrimaryBrush}"/>
-                    </StackPanel>
-
-                    <TabControl Grid.Row="1" 
-                               Background="{StaticResource BackgroundBrush}"
-                               BorderThickness="0">
-                        <!-- XML View -->
-                        <TabItem Header="XML View">
-                            <TextBox FontFamily="Consolas" 
-                                   FontSize="12"
-                                   Text="{Binding UppaalXml, Mode=TwoWay}"
-                                   AcceptsReturn="True" 
-                                   AcceptsTab="True"
-                                   VerticalScrollBarVisibility="Auto"
-                                   HorizontalScrollBarVisibility="Auto"
-                                   IsReadOnly="{Binding IsXmlReadOnly}"
-                                   Background="{StaticResource SurfaceBrush}"
-                                   Foreground="{StaticResource TextPrimaryBrush}"
-                                   Padding="10"/>
-                        </TabItem>
-                        <TabItem Header="Readiness">
-                            <Grid Background="{StaticResource BackgroundBrush}">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="*"/>
-                                </Grid.RowDefinitions>
-                                <TextBlock Grid.Row="0"
-                                           Text="{Binding ReadinessStatus}"
-                                           Foreground="{StaticResource TextPrimaryBrush}"
-                                           FontWeight="SemiBold"
-                                           Margin="10,8"/>
-                                <DataGrid Grid.Row="1"
-                                          ItemsSource="{Binding CompatibilityIssues}"
-                                          AutoGenerateColumns="False"
-                                          CanUserAddRows="False"
-                                          IsReadOnly="True"
-                                          HeadersVisibility="Column"
-                                          Margin="8">
-                                    <DataGrid.Columns>
-                                        <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="100"/>
-                                        <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="150"/>
-                                        <DataGridTextColumn Header="Position" Binding="{Binding Position}" Width="260"/>
-                                        <DataGridTextColumn Header="Message" Binding="{Binding Message}" Width="*"/>
-                                    </DataGrid.Columns>
-                                </DataGrid>
-                            </Grid>
-                        </TabItem>
-                    </TabControl>
-                </Grid>
-            </TabItem>
-
-            <!-- Requirements Tab -->
-            <TabItem Header="Requirements">
-                <Grid Background="{StaticResource BackgroundBrush}">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="180"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-
-                    <StackPanel Grid.Row="0"
-                                Orientation="Horizontal"
-                                Background="{StaticResource PrimaryMidBrush}">
-                        <Button Content="Interpret Requirements"
-                                Command="{Binding InterpretRequirementsCommand}"
-                                Style="{StaticResource WhiteButtonStyle}"
-                                Margin="8"/>
-                    </StackPanel>
-
-                    <TextBox Grid.Row="1"
-                             FontFamily="Consolas"
-                             FontSize="13"
-                             Text="{Binding RequirementsText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             AcceptsReturn="True"
-                             VerticalScrollBarVisibility="Auto"
-                             HorizontalScrollBarVisibility="Auto"
-                             Background="{StaticResource SurfaceBrush}"
-                             Foreground="{StaticResource TextPrimaryBrush}"
-                             Padding="10"
-                             Margin="8"/>
-
-                    <DataGrid Grid.Row="2"
-                              ItemsSource="{Binding GeneratedQueries}"
-                              AutoGenerateColumns="False"
-                              CanUserAddRows="False"
-                              GridLinesVisibility="Horizontal"
-                              HeadersVisibility="Column"
-                              Margin="8">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="170"/>
-                            <DataGridTextColumn Header="Formula" Binding="{Binding Formula}" Width="360"/>
-                            <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="90" IsReadOnly="True"/>
-                            <DataGridCheckBoxColumn Header="Valid" Binding="{Binding IsValidated}" Width="70" IsReadOnly="True"/>
-                            <DataGridTextColumn Header="Comment" Binding="{Binding Comment}" Width="*"/>
-                        </DataGrid.Columns>
-                    </DataGrid>
-                </Grid>
-            </TabItem>
-
-            <!-- Analysis Results Tab -->
+            <!-- ═══════════════════════════════════════════════════
+                 7. ANALYSIS  – complexity metrics per function
+                 ═══════════════════════════════════════════════════ -->
             <TabItem Header="Analysis">
                 <Grid Background="{StaticResource BackgroundBrush}">
                     <Grid.RowDefinitions>
@@ -444,12 +512,10 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <!-- Toolbar with white buttons -->
-                    <StackPanel Grid.Row="0" 
-                               Orientation="Horizontal" 
-                               Background="{StaticResource PrimaryMidBrush}"
-                               >
-                        <Button Content="Run Analysis" 
+                    <StackPanel Grid.Row="0"
+                               Orientation="Horizontal"
+                               Background="{StaticResource PrimaryMidBrush}">
+                        <Button Content="Run Analysis"
                                 Command="{Binding RunAnalysisCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"/>
                     </StackPanel>
@@ -460,23 +526,24 @@
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
-                        <ListBox Grid.Column="0" 
-                               ItemsSource="{Binding Methods}"
+                        <!-- Only checked functions shown -->
+                        <ListBox Grid.Column="0"
+                               ItemsSource="{Binding SelectedMethods}"
                                SelectedItem="{Binding SelectedMethod}"
                                Background="{StaticResource BackgroundBrush}"
                                Foreground="{StaticResource TextPrimaryBrush}">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <StackPanel Margin="8">
-                                        <TextBlock Text="{Binding Name}" 
+                                        <TextBlock Text="{Binding Name}"
                                                  FontWeight="Bold"
                                                  FontSize="14"
                                                  Foreground="{StaticResource TextPrimaryBrush}"/>
-                                        <TextBlock Text="{Binding ReturnType}" 
+                                        <TextBlock Text="{Binding ReturnType}"
                                                  FontStyle="Italic"
                                                  Foreground="{StaticResource TextSecondaryBrush}"/>
                                         <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                                            <TextBlock Text="Complexity: " 
+                                            <TextBlock Text="Complexity: "
                                                      FontWeight="SemiBold"
                                                      Foreground="{StaticResource TextSecondaryBrush}"/>
                                             <TextBlock Text="{Binding Complexity.CyclomaticComplexity}"
@@ -488,34 +555,34 @@
                             </ListBox.ItemTemplate>
                         </ListBox>
 
-                        <Border Grid.Column="1" 
-                              BorderBrush="{StaticResource BorderBrush}" 
+                        <Border Grid.Column="1"
+                              BorderBrush="{StaticResource BorderBrush}"
                               BorderThickness="1,0,0,0"
                               Background="{StaticResource SurfaceBrush}">
                             <ScrollViewer>
                                 <StackPanel Margin="16" DataContext="{Binding SelectedMethod}">
-                                    <TextBlock Text="Method Details" 
-                                             FontSize="18" 
-                                             FontWeight="Bold" 
+                                    <TextBlock Text="Method Details"
+                                             FontSize="18"
+                                             FontWeight="Bold"
                                              Margin="0,0,0,16"
                                              Foreground="{StaticResource TextPrimaryBrush}"/>
                                     <StackPanel>
                                         <TextBlock Margin="0,0,0,10">
-                                            <Run Text="Name: " 
-                                                 FontWeight="SemiBold" 
+                                            <Run Text="Name: "
+                                                 FontWeight="SemiBold"
                                                  Foreground="{StaticResource TextSecondaryBrush}"/>
                                             <Run Text="{Binding Name, Mode=OneWay}"
                                                  Foreground="{StaticResource TextPrimaryBrush}"/>
                                         </TextBlock>
                                         <TextBlock Margin="0,0,0,10">
-                                            <Run Text="Return Type: " 
+                                            <Run Text="Return Type: "
                                                  FontWeight="SemiBold"
                                                  Foreground="{StaticResource TextSecondaryBrush}"/>
                                             <Run Text="{Binding ReturnType, Mode=OneWay}"
                                                  Foreground="{StaticResource TextPrimaryBrush}"/>
                                         </TextBlock>
                                         <TextBlock Margin="0,0,0,10">
-                                            <Run Text="Cyclomatic Complexity: " 
+                                            <Run Text="Cyclomatic Complexity: "
                                                  FontWeight="SemiBold"
                                                  Foreground="{StaticResource TextSecondaryBrush}"/>
                                             <Run Text="{Binding Complexity.CyclomaticComplexity, Mode=OneWay}"
@@ -523,7 +590,7 @@
                                                  Foreground="{StaticResource TextPrimaryBrush}"/>
                                         </TextBlock>
                                         <TextBlock Margin="0,0,0,10">
-                                            <Run Text="Lines of Code: " 
+                                            <Run Text="Lines of Code: "
                                                  FontWeight="SemiBold"
                                                  Foreground="{StaticResource TextSecondaryBrush}"/>
                                             <Run Text="{Binding LinesOfCode, Mode=OneWay}"
@@ -537,50 +604,9 @@
                 </Grid>
             </TabItem>
 
-            <!-- Assumptions and Domains Tab -->
-            <TabItem Header="Assumptions">
-                <Grid Background="{StaticResource BackgroundBrush}">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="*"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-
-                    <GroupBox Grid.Row="0" Header="Translation Assumptions" Foreground="White" Margin="8">
-                        <DataGrid ItemsSource="{Binding Assumptions}"
-                                  AutoGenerateColumns="False"
-                                  CanUserAddRows="False"
-                                  GridLinesVisibility="Horizontal"
-                                  HeadersVisibility="Column">
-                            <DataGrid.Columns>
-                                <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="100" IsReadOnly="True"/>
-                                <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="150" IsReadOnly="True"/>
-                                <DataGridTextColumn Header="Symbol" Binding="{Binding SymbolName}" Width="220" IsReadOnly="True"/>
-                                <DataGridTextColumn Header="Location" Binding="{Binding Location}" Width="220" IsReadOnly="True"/>
-                                <DataGridTextColumn Header="Message" Binding="{Binding Message}" Width="*"/>
-                            </DataGrid.Columns>
-                        </DataGrid>
-                    </GroupBox>
-
-                    <GroupBox Grid.Row="1" Header="Variable Domains" Foreground="White" Margin="8">
-                        <DataGrid ItemsSource="{Binding Domains}"
-                                  AutoGenerateColumns="False"
-                                  CanUserAddRows="False"
-                                  GridLinesVisibility="Horizontal"
-                                  HeadersVisibility="Column">
-                            <DataGrid.Columns>
-                                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="260"/>
-                                <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="90"/>
-                                <DataGridTextColumn Header="Min" Binding="{Binding Min}" Width="80"/>
-                                <DataGridTextColumn Header="Max" Binding="{Binding Max}" Width="80"/>
-                                <DataGridCheckBoxColumn Header="Bool" Binding="{Binding IsBoolean}" Width="70"/>
-                                <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="*"/>
-                            </DataGrid.Columns>
-                        </DataGrid>
-                    </GroupBox>
-                </Grid>
-            </TabItem>
-
-            <!-- Layout Fixer Tab -->
+            <!-- ═══════════════════════════════════════════════════
+                 8. LAYOUT FIXER  – clean up messy UPPAAL XML
+                 ═══════════════════════════════════════════════════ -->
             <TabItem Header="Layout Fixer">
                 <Grid Background="{StaticResource BackgroundBrush}">
                     <Grid.RowDefinitions>
@@ -588,30 +614,28 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <!-- Toolbar -->
-                    <StackPanel Grid.Row="0" 
-                               Orientation="Horizontal" 
+                    <StackPanel Grid.Row="0"
+                               Orientation="Horizontal"
                                Background="{StaticResource PrimaryMidBrush}">
-                        <Button Content="Load XML File" 
+                        <Button Content="Load XML File"
                                 Command="{Binding LoadLayoutInputCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 ToolTip="Open a UPPAAL XML file to fix"/>
-                        <Button Content="Fix Layout" 
+                        <Button Content="Fix Layout"
                                 Command="{Binding FixLayoutCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 ToolTip="Re-compute positions for the input XML"/>
-                        <Button Content="Export Fixed XML" 
+                        <Button Content="Export Fixed XML"
                                 Command="{Binding ExportFixedLayoutCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 ToolTip="Save the corrected XML to a file"/>
                         <Separator Margin="8,0" Background="White" Width="2"/>
-                        <Button Content="Clear" 
+                        <Button Content="Clear"
                                 Command="{Binding ClearLayoutCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 ToolTip="Clear both panels"/>
                     </StackPanel>
 
-                    <!-- Two-panel layout: Input (left) → Output (right) -->
                     <Grid Grid.Row="1" Margin="4">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -619,10 +643,9 @@
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
-                        <!-- Input panel -->
                         <DockPanel Grid.Column="0">
-                            <TextBlock DockPanel.Dock="Top" 
-                                     Text="Input XML (paste or load a jumbled UPPAAL model)" 
+                            <TextBlock DockPanel.Dock="Top"
+                                     Text="Input XML (paste or load a jumbled UPPAAL model)"
                                      FontWeight="SemiBold" Foreground="White"
                                      Margin="8,6,8,4"/>
                             <TextBox FontFamily="Consolas" FontSize="12"
@@ -634,17 +657,15 @@
                                    Padding="10" Margin="4"/>
                         </DockPanel>
 
-                        <!-- Arrow separator -->
-                        <TextBlock Grid.Column="1" Text="➜" 
+                        <TextBlock Grid.Column="1" Text="➜"
                                  FontSize="28" FontWeight="Bold"
                                  Foreground="{StaticResource PrimaryMidBrush}"
-                                 VerticalAlignment="Center" 
+                                 VerticalAlignment="Center"
                                  Margin="6,0"/>
 
-                        <!-- Output panel -->
                         <DockPanel Grid.Column="2">
-                            <TextBlock DockPanel.Dock="Top" 
-                                     Text="Output XML (fixed layout)" 
+                            <TextBlock DockPanel.Dock="Top"
+                                     Text="Output XML (fixed layout)"
                                      FontWeight="SemiBold" Foreground="White"
                                      Margin="8,6,8,4"/>
                             <TextBox FontFamily="Consolas" FontSize="12"
@@ -657,24 +678,14 @@
                                    Padding="10" Margin="4"/>
                         </DockPanel>
                     </Grid>
-
-                    <TextBox Grid.Row="2"
-                             Text="{Binding LayoutReportText}"
-                             IsReadOnly="True"
-                             FontFamily="Consolas"
-                             FontSize="12"
-                             Background="{StaticResource SurfaceBrush}"
-                             Foreground="{StaticResource TextPrimaryBrush}"
-                             VerticalScrollBarVisibility="Auto"
-                             Margin="8"
-                             Padding="8"/>
                 </Grid>
             </TabItem>
+
         </TabControl>
 
         <!-- Status Bar -->
-        <StatusBar Grid.Row="2" 
-                  Background="{StaticResource PrimaryDarkBrush}" 
+        <StatusBar Grid.Row="2"
+                  Background="{StaticResource PrimaryDarkBrush}"
                   Foreground="White"
                   Height="30">
             <StatusBarItem>
@@ -685,7 +696,7 @@
             </StatusBarItem>
             <Separator />
             <StatusBarItem>
-                <ProgressBar Width="120" Height="18" 
+                <ProgressBar Width="120" Height="18"
                            IsIndeterminate="{Binding IsBusy}"
                            Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
                            Foreground="#FFD700"/>

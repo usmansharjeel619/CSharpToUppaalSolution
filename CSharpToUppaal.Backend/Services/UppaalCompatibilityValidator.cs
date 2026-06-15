@@ -183,7 +183,7 @@ namespace CSharpToUppaal.Backend.Services
 
         private static IEnumerable<string> FindDuplicateSimpleDeclarations(string declaration)
         {
-            return Regex.Matches(declaration, @"^\s*(?:int|bool|clock|chan)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=)", RegexOptions.Multiline)
+            return Regex.Matches(declaration, @"^\s*(?:int(?:\[[^\]]*\])?|bool|clock|chan)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=)", RegexOptions.Multiline)
                 .Select(m => m.Groups[1].Value)
                 .GroupBy(n => n, StringComparer.Ordinal)
                 .Where(g => g.Count() > 1)

@@ -615,11 +615,14 @@ namespace CSharpToUppaal.Backend.Services
                 foreach (var parameter in function.Parameters)
                 {
                     var domain = GetDomain(function, parameter.Name, parameter.Type, "parameter");
-                    template.Declarations.AppendLine($"{MapType(parameter.Type)} {Sanitize(parameter.Name)};");
+                    template.Declarations.AppendLine($"{domain.ToUppaalDeclType()} {Sanitize(parameter.Name)} = {domain.DefaultValue()};");
                 }
 
                 if (!function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase))
-                    template.Declarations.AppendLine($"{MapType(function.ReturnType)} ret;");
+                {
+                    var retDomain = GetDomain(function, "ret", function.ReturnType, "return");
+                    template.Declarations.AppendLine($"{retDomain.ToUppaalDeclType()} ret = {retDomain.DefaultValue()};");
+                }
 
                 if (method != null && mode == FunctionModelingMode.ExplicitAutomaton)
                 {
@@ -628,7 +631,10 @@ namespace CSharpToUppaal.Backend.Services
                         .GroupBy(v => Sanitize(v.name), StringComparer.Ordinal)
                         .Select(g => g.First()))
                     {
-                        template.Declarations.AppendLine($"{MapType(local.type)} {Sanitize(local.name)};");
+                        var isBool = local.type.Trim().Equals("bool", StringComparison.OrdinalIgnoreCase)
+                                  || local.type.Trim().Equals("Boolean", StringComparison.OrdinalIgnoreCase);
+                        var defaultVal = isBool ? "false" : "0";
+                        template.Declarations.AppendLine($"{MapType(local.type)} {Sanitize(local.name)} = {defaultVal};");
                     }
                 }
 

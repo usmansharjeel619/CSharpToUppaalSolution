@@ -145,7 +145,11 @@ namespace BankSystem
         partial void OnMethodsChanged(ObservableCollection<CSharpToUppaal.Backend.Models.MethodInfo> value)
         {
             Console.WriteLine($"Methods collection changed. New count: {value?.Count ?? 0}");
+            RefreshSelectedMethods();
         }
+
+        [ObservableProperty]
+        private ObservableCollection<CSharpToUppaal.Backend.Models.MethodInfo> _selectedMethods = new();
 
         [ObservableProperty]
         private CSharpToUppaal.Backend.Models.MethodInfo _selectedMethod;
@@ -969,11 +973,17 @@ namespace BankSystem
 
             foreach (var function in analysis.Functions.OrderBy(f => f.LineNumber))
             {
-                FunctionSelections.Add(new FunctionSelectionViewModel(function)
+                var vm = new FunctionSelectionViewModel(function)
                 {
                     IsSelected = hasMain ? function.Name == "Main" : true,
                     Mode = FunctionModelingMode.ExplicitAutomaton
-                });
+                };
+                vm.PropertyChanged += (_, e) =>
+                {
+                    if (e.PropertyName == nameof(FunctionSelectionViewModel.IsSelected))
+                        RefreshSelectedMethods();
+                };
+                FunctionSelections.Add(vm);
             }
 
             foreach (var assumption in analysis.Assumptions)
@@ -989,7 +999,26 @@ namespace BankSystem
                 });
             }
 
+            RefreshSelectedMethods();
             StatusMessage = $"Semantic analysis found {FunctionSelections.Count} function(s)";
+        }
+
+        private void RefreshSelectedMethods()
+        {
+            var selectedNames = FunctionSelections
+                .Where(f => f.IsSelected)
+                .Select(f => f.Function.Name)
+                .ToHashSet(StringComparer.Ordinal);
+
+            SelectedMethods.Clear();
+            foreach (var method in Methods)
+            {
+                if (selectedNames.Contains(method.Name))
+                    SelectedMethods.Add(method);
+            }
+
+            if (SelectedMethod != null && !SelectedMethods.Contains(SelectedMethod))
+                SelectedMethod = SelectedMethods.FirstOrDefault();
         }
 
         private List<FunctionSelection> BuildFunctionSelections()
@@ -1248,6 +1277,31 @@ namespace BankSystem
 
         [RelayCommand]
         private async Task RunAnalysis() => await AnalyzeCode();
+
+        [RelayCommand]
+        private async Task LoadRequirementsFromFile()
+        {
+            try
+            {
+                var openFileDialog = new OpenFileDialog
+                {
+                    Filter = "Text Files (*.txt)|*.txt|Markdown Files (*.md)|*.md|All files (*.*)|*.*",
+                    Title = "Load Requirements from File"
+                };
+
+                if (openFileDialog.ShowDialog() == true)
+                {
+                    RequirementsText = await System.IO.File.ReadAllTextAsync(openFileDialog.FileName);
+                    StatusMessage = $"Requirements loaded from {IOPath.GetFileName(openFileDialog.FileName)}";
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Error loading requirements: {ex.Message}";
+                MessageBox.Show($"Error loading requirements: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
 
         [RelayCommand]
         private async Task InterpretRequirements()
