@@ -361,3 +361,7 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+installer/
+dist/CSharpToUppaal-Setup.msi
+dist/CSharpToUppaal-Setup.wixpdb
