@@ -315,7 +315,9 @@ namespace CSharpToUppaal.Backend.Models
 
         public string DefaultValue()
         {
-            return IsBoolean || Type.Equals("bool", StringComparison.OrdinalIgnoreCase) ? "false" : "0";
+            if (IsBoolean || Type.Equals("bool", StringComparison.OrdinalIgnoreCase))
+                return "false";
+            return Math.Clamp(0, Min, Max).ToString();
         }
     }
 
