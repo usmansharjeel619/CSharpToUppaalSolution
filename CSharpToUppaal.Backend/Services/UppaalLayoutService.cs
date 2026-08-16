@@ -394,8 +394,7 @@ namespace CSharpToUppaal.Backend.Services
                 var nameEl = loc.Element("name");
                 if (nameEl != null)
                 {
-                    var text = nameEl.Value ?? string.Empty;
-                    nameEl.SetAttributeValue("x", x - Math.Max(12, text.Length * 3));
+                    nameEl.SetAttributeValue("x", x + 22);
                     nameEl.SetAttributeValue("y", y - 7);
                 }
 

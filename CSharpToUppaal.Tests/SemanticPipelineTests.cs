@@ -208,7 +208,7 @@ public class SemanticPipelineTests
     }
 
     [Fact]
-    public async Task LayoutPlacesLocationsTopDownAndCentersNames()
+    public async Task LayoutPlacesLocationsTopDownAndPlacesNamesToTheRight()
     {
         var generator = new UppaalGeneratorService();
         var model = await generator.GenerateModelFromRequestAsync(new ModelGenerationRequest
@@ -229,7 +229,8 @@ public class SemanticPipelineTests
         {
             var name = location.Element("name");
             Assert.NotNull(name);
-            Assert.Equal(ReadInt(location.Attribute("y")?.Value) - 7, ReadInt(name!.Attribute("y")?.Value));
+            Assert.Equal(ReadInt(location.Attribute("x")?.Value) + 22, ReadInt(name!.Attribute("x")?.Value));
+            Assert.Equal(ReadInt(location.Attribute("y")?.Value) - 7, ReadInt(name.Attribute("y")?.Value));
         }
     }
 

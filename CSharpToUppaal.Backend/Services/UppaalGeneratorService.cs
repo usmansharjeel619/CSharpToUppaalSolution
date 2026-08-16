@@ -1080,7 +1080,7 @@ namespace CSharpToUppaal.Backend.Services
                         {
                             ["_x"] = x.ToString(),
                             ["_y"] = y.ToString(),
-                            ["_nameX"] = ApproximateCenteredNameX(locationName, x).ToString(),
+                            ["_nameX"] = (x + 22).ToString(),
                             ["_nameY"] = (y - 7).ToString()
                         }
                     });
@@ -1098,11 +1098,6 @@ namespace CSharpToUppaal.Backend.Services
                         return baseName;
 
                     return $"{baseName}_{count:00}";
-                }
-
-                private static int ApproximateCenteredNameX(string name, int x)
-                {
-                    return x - Math.Max(12, name.Length * 3);
                 }
 
                 public void AddTransition(string source, string target, string guard = "", string update = "", string select = "", string synchronization = "")
