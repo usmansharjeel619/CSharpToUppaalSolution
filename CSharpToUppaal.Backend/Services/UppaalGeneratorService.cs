@@ -386,7 +386,20 @@ namespace CSharpToUppaal.Backend.Services
                     DeclareTemplateCallContract(function, globalDeclaration);
                 }
 
-                var roots = _included.Where(IsRoot).ToList();
+                ValidateNoRecursiveTemplateCalls(functions);
+
+                // A dependency selected as well as its caller must not be started again by
+                // the driver.  In a project without Main this gives the user one entry
+                // process per call-graph root, rather than executing dependencies twice.
+                var selectedRoots = _included.Where(IsRoot).ToList();
+                var selectedIds = selectedRoots.Select(f => f.Id).ToHashSet(StringComparer.Ordinal);
+                var calledBySelectedRoot = selectedRoots
+                    .SelectMany(f => f.DirectCallIds)
+                    .Where(selectedIds.Contains)
+                    .ToHashSet(StringComparer.Ordinal);
+                var roots = selectedRoots.Where(f => !calledBySelectedRoot.Contains(f.Id)).ToList();
+                if (roots.Count == 0 && selectedRoots.Count > 0)
+                    roots.Add(selectedRoots.OrderBy(f => f.LineNumber).ThenBy(f => f.Signature, StringComparer.Ordinal).First());
                 if (roots.Count == 0 && _included.Count > 0)
                     roots.Add(_included[0]);
 
@@ -472,6 +485,43 @@ namespace CSharpToUppaal.Backend.Services
                     Visit(function);
 
                 return ordered;
+            }
+
+            private void ValidateNoRecursiveTemplateCalls(IReadOnlyList<FunctionDescriptor> functions)
+            {
+                var activeIds = functions
+                    .Where(f => ModeOf(f) != FunctionModelingMode.Stub)
+                    .Select(f => f.Id)
+                    .ToHashSet(StringComparer.Ordinal);
+                var visiting = new HashSet<string>(StringComparer.Ordinal);
+                var visited = new HashSet<string>(StringComparer.Ordinal);
+                var stack = new List<string>();
+
+                void Visit(string id)
+                {
+                    if (visiting.Contains(id))
+                    {
+                        var first = stack.IndexOf(id);
+                        var cycle = stack.Skip(first).Append(id)
+                            .Select(cycleId => _functionById[cycleId].Signature);
+                        throw new UppaalGenerationException(
+                            $"Recursive C# calls are not supported by the single-instance template protocol: {string.Join(" -> ", cycle)}. " +
+                            "Use an iterative implementation or model recursion with an explicit, user-bounded stack.");
+                    }
+
+                    if (!visited.Add(id))
+                        return;
+
+                    visiting.Add(id);
+                    stack.Add(id);
+                    foreach (var calleeId in _functionById[id].DirectCallIds.Where(activeIds.Contains))
+                        Visit(calleeId);
+                    stack.RemoveAt(stack.Count - 1);
+                    visiting.Remove(id);
+                }
+
+                foreach (var function in functions)
+                    Visit(function.Id);
             }
 
             private bool IsRoot(FunctionDescriptor function)
@@ -871,17 +921,9 @@ namespace CSharpToUppaal.Backend.Services
                     var id = CSharpSemanticAnalyzer.ToFunctionId(symbol);
                     if (_callContracts.ContainsKey(id))
                     {
-                        unknownCallName = symbol.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
-                        _assumptions.Add(new TranslationAssumption
-                        {
-                            Severity = AssumptionSeverity.Warning,
-                            Category = "TemplateCallExpression",
-                            SymbolName = unknownCallName,
-                            Location = currentFunction.Signature,
-                            Message = "A function call nested in an expression was abstracted; direct calls use synchronised templates.",
-                            IsUserEditable = true
-                        });
-                        return DefaultValue(fallbackType);
+                        throw new UppaalGenerationException(
+                            $"The call '{symbol.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat)}' occurs in a C# expression context that cannot be represented safely. " +
+                            "Use a local variable or assignment statement so the converter can emit the required call/wait channel sequence.");
                     }
 
                     unknownCallName = symbol.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
@@ -1094,7 +1136,9 @@ namespace CSharpToUppaal.Backend.Services
                     count++;
                     _locationNameCounts[baseName] = count;
 
-                    if ((baseName.Equals("Entry", StringComparison.Ordinal) || baseName.Equals("Done", StringComparison.Ordinal)) && count == 1)
+                    if ((baseName.Equals("Entry", StringComparison.Ordinal)
+                        || baseName.Equals("Done", StringComparison.Ordinal)
+                        || baseName.Equals("DriverDone", StringComparison.Ordinal)) && count == 1)
                         return baseName;
 
                     return $"{baseName}_{count:00}";
@@ -1131,6 +1175,7 @@ namespace CSharpToUppaal.Backend.Services
                 private readonly FunctionDescriptor _function;
                 private readonly TemplateBuilder _template;
                 private readonly string _done;
+                private int _temporaryIndex;
 
                 public AutomatonBodyBuilder(SemanticUppaalBuilder owner, FunctionDescriptor function, TemplateBuilder template, string done)
                 {
@@ -1155,18 +1200,13 @@ namespace CSharpToUppaal.Backend.Services
 
                 public List<string> BuildReturnExpression(ExpressionSyntax expression, List<string> starts)
                 {
-                    if (expression is InvocationExpressionSyntax invocation && _owner.TryResolveTemplateCall(invocation, out _))
-                    {
-                        foreach (var exit in BuildTemplateCall(invocation, starts, _function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase) ? null : "ret", "Return"))
-                            _template.AddTransition(exit, _done);
-                        return new List<string>();
-                    }
+                    var lowered = LowerValueExpression(expression, starts, _function.ReturnType);
 
                     var update = _function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase)
                         ? string.Empty
-                        : $"ret = {_owner.TranslateExpression(expression, _function, _function.ReturnType)}";
+                        : $"ret = {lowered.value}";
                     var loc = _template.AddLocation("Return", urgent: true);
-                    foreach (var start in starts)
+                    foreach (var start in lowered.exits)
                         _template.AddTransition(start, loc, update: update);
                     _template.AddTransition(loc, _done);
                     return new List<string>();
@@ -1195,12 +1235,20 @@ namespace CSharpToUppaal.Backend.Services
                     if (statement.Expression is InvocationExpressionSyntax invocation && _owner.TryResolveTemplateCall(invocation, out _))
                         return BuildTemplateCall(invocation, starts, null, "Call");
 
-                    if (statement.Expression is AssignmentExpressionSyntax assignment
-                        && assignment.Right is InvocationExpressionSyntax assignedCall
-                        && _owner.TryResolveTemplateCall(assignedCall, out _))
+                    if (statement.Expression is AssignmentExpressionSyntax assignment)
                     {
-                        return BuildTemplateCall(assignedCall, starts,
-                            _owner.TranslateExpression(assignment.Left, _function, "int"), "Call");
+                        var lowered = LowerValueExpression(assignment.Right, starts, "int");
+                        var left = _owner.TranslateExpression(assignment.Left, _function, "int");
+                        var assignmentUpdate = assignment.Kind() switch
+                        {
+                            SyntaxKind.AddAssignmentExpression => $"{left} = {left} + {lowered.value}",
+                            SyntaxKind.SubtractAssignmentExpression => $"{left} = {left} - {lowered.value}",
+                            SyntaxKind.MultiplyAssignmentExpression => $"{left} = {left} * {lowered.value}",
+                            SyntaxKind.DivideAssignmentExpression => $"{left} = {left} / {lowered.value}",
+                            SyntaxKind.ModuloAssignmentExpression => $"{left} = {left} % {lowered.value}",
+                            _ => $"{left} = {lowered.value}"
+                        };
+                        return BuildSimple(lowered.exits, "Stmt", assignmentUpdate);
                     }
 
                     var update = BuildExpressionUpdate(statement.Expression, out var select);
@@ -1209,19 +1257,16 @@ namespace CSharpToUppaal.Backend.Services
 
                 private List<string> BuildReturn(ReturnStatementSyntax statement, List<string> starts)
                 {
-                    if (statement.Expression is InvocationExpressionSyntax invocation && _owner.TryResolveTemplateCall(invocation, out _))
-                    {
-                        foreach (var exit in BuildTemplateCall(invocation, starts, _function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase) ? null : "ret", "Return"))
-                            _template.AddTransition(exit, _done);
-                        return new List<string>();
-                    }
+                    (List<string> exits, string value) lowered = statement.Expression == null
+                        ? (starts, DefaultValue(_function.ReturnType))
+                        : LowerValueExpression(statement.Expression, starts, _function.ReturnType);
 
                     var update = string.Empty;
                     if (statement.Expression != null && !_function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase))
-                        update = $"ret = {_owner.TranslateExpression(statement.Expression, _function, _function.ReturnType)}";
+                        update = $"ret = {lowered.value}";
 
                     var loc = _template.AddLocation("Return", urgent: true);
-                    foreach (var start in starts)
+                    foreach (var start in lowered.exits)
                         _template.AddTransition(start, loc, update: update);
                     _template.AddTransition(loc, _done);
                     return new List<string>();
@@ -1230,12 +1275,13 @@ namespace CSharpToUppaal.Backend.Services
                 private List<string> BuildIf(IfStatementSyntax statement, List<string> starts)
                 {
                     var condLoc = _template.AddLocation("If");
-                    foreach (var start in starts)
+                    var loweredCondition = LowerValueExpression(statement.Condition, starts, "bool");
+                    foreach (var start in loweredCondition.exits)
                         _template.AddTransition(start, condLoc);
 
                     var thenLoc = _template.AddLocation("Then");
                     var elseLoc = _template.AddLocation("Else");
-                    var condition = _owner.TranslateExpression(statement.Condition, _function, "bool");
+                    var condition = loweredCondition.value;
                     _template.AddTransition(condLoc, thenLoc, guard: condition);
                     _template.AddTransition(condLoc, elseLoc, guard: Negate(condition));
 
@@ -1259,14 +1305,17 @@ namespace CSharpToUppaal.Backend.Services
                     var cond = _template.AddLocation("While");
                     var body = _template.AddLocation("LoopBody");
                     var after = _template.AddLocation("AfterLoop");
-                    foreach (var start in starts)
+                    var initialCondition = LowerValueExpression(statement.Condition, starts, "bool");
+                    foreach (var start in initialCondition.exits)
                         _template.AddTransition(start, cond);
 
-                    var condition = _owner.TranslateExpression(statement.Condition, _function, "bool");
+                    var condition = initialCondition.value;
                     _template.AddTransition(cond, body, guard: condition);
                     _template.AddTransition(cond, after, guard: Negate(condition));
 
-                    foreach (var exit in BuildStatement(statement.Statement, new List<string> { body }))
+                    var bodyExits = BuildStatement(statement.Statement, new List<string> { body });
+                    var nextCondition = LowerValueExpression(statement.Condition, bodyExits, "bool");
+                    foreach (var exit in nextCondition.exits)
                         _template.AddTransition(exit, cond);
 
                     return new List<string> { after };
@@ -1282,12 +1331,13 @@ namespace CSharpToUppaal.Backend.Services
                     var cond = _template.AddLocation("For");
                     var body = _template.AddLocation("ForBody");
                     var after = _template.AddLocation("AfterFor");
-                    foreach (var start in current)
+                    var initialCondition = statement.Condition == null
+                        ? (current, "true")
+                        : LowerValueExpression(statement.Condition, current, "bool");
+                    foreach (var start in initialCondition.Item1)
                         _template.AddTransition(start, cond);
 
-                    var condition = statement.Condition == null
-                        ? "true"
-                        : _owner.TranslateExpression(statement.Condition, _function, "bool");
+                    var condition = initialCondition.Item2;
                     _template.AddTransition(cond, body, guard: condition);
                     _template.AddTransition(cond, after, guard: Negate(condition));
 
@@ -1298,11 +1348,18 @@ namespace CSharpToUppaal.Backend.Services
                         var inc = _template.AddLocation("ForUpdate");
                         foreach (var exit in bodyExits)
                             _template.AddTransition(exit, inc, update: increment);
-                        _template.AddTransition(inc, cond);
+                        var nextCondition = statement.Condition == null
+                            ? (new List<string> { inc }, "true")
+                            : LowerValueExpression(statement.Condition, new List<string> { inc }, "bool");
+                        foreach (var exit in nextCondition.Item1)
+                            _template.AddTransition(exit, cond);
                     }
                     else
                     {
-                        foreach (var exit in bodyExits)
+                        var nextCondition = statement.Condition == null
+                            ? (bodyExits, "true")
+                            : LowerValueExpression(statement.Condition, bodyExits, "bool");
+                        foreach (var exit in nextCondition.Item1)
                             _template.AddTransition(exit, cond);
                     }
 
@@ -1321,7 +1378,12 @@ namespace CSharpToUppaal.Backend.Services
                     foreach (var exit in exits)
                         _template.AddTransition(exit, cond);
 
-                    var condition = _owner.TranslateExpression(statement.Condition, _function, "bool");
+                    var loweredCondition = LowerValueExpression(statement.Condition, exits, "bool");
+                    var condition = loweredCondition.value;
+                    foreach (var exit in loweredCondition.exits)
+                    {
+                        _template.AddTransition(exit, cond);
+                    }
                     _template.AddTransition(cond, body, guard: condition);
                     _template.AddTransition(cond, after, guard: Negate(condition));
                     return new List<string> { after };
@@ -1351,16 +1413,18 @@ namespace CSharpToUppaal.Backend.Services
 
                 private List<string> BuildLocalDeclaration(LocalDeclarationStatementSyntax local, List<string> starts)
                 {
-                    if (local.Declaration.Variables.Count == 1
-                        && local.Declaration.Variables[0].Initializer?.Value is InvocationExpressionSyntax invocation
-                        && _owner.TryResolveTemplateCall(invocation, out _))
+                    var current = starts;
+                    foreach (var variable in local.Declaration.Variables)
                     {
-                        return BuildTemplateCall(invocation, starts,
-                            Sanitize(local.Declaration.Variables[0].Identifier.Text), "Call");
+                        if (variable.Initializer == null)
+                            continue;
+
+                        var lowered = LowerValueExpression(variable.Initializer.Value, current, local.Declaration.Type.ToString());
+                        current = BuildSimple(lowered.exits, "Declare",
+                            $"{Sanitize(variable.Identifier.Text)} = {lowered.value}");
                     }
 
-                    var update = BuildDeclarationUpdate(local, out var select);
-                    return BuildSimple(starts, "Declare", update, select);
+                    return current;
                 }
 
                 private List<string> BuildTemplateCall(
@@ -1373,13 +1437,26 @@ namespace CSharpToUppaal.Backend.Services
                         return BuildSimple(starts, locationPrefix, string.Empty);
 
                     var contract = _owner._callContracts[callee.Id];
+                    var current = starts;
+                    var argumentValues = new List<string>();
+                    foreach (var (parameter, index) in callee.Parameters.Select((parameter, index) => (parameter, index)))
+                    {
+                        if (index >= invocation.ArgumentList.Arguments.Count)
+                        {
+                            argumentValues.Add(DefaultValue(parameter.Type));
+                            continue;
+                        }
+
+                        var lowered = LowerValueExpression(invocation.ArgumentList.Arguments[index].Expression, current, parameter.Type);
+                        current = lowered.exits;
+                        argumentValues.Add(lowered.value);
+                    }
+
                     var prepare = _template.AddLocation($"{locationPrefix}_{Sanitize(callee.Name)}");
                     var argumentUpdates = callee.Parameters
-                        .Select((parameter, index) => index < invocation.ArgumentList.Arguments.Count
-                            ? $"{contract.ArgumentVariables[parameter.Name]} = {_owner.TranslateExpression(invocation.ArgumentList.Arguments[index].Expression, _function, parameter.Type)}"
-                            : $"{contract.ArgumentVariables[parameter.Name]} = {DefaultValue(parameter.Type)}")
+                        .Select((parameter, index) => $"{contract.ArgumentVariables[parameter.Name]} = {argumentValues[index]}")
                         .ToList();
-                    foreach (var start in starts)
+                    foreach (var start in current)
                         _template.AddTransition(start, prepare, update: string.Join(", ", argumentUpdates));
 
                     var waiting = _template.AddLocation($"Await_{Sanitize(callee.Name)}");
@@ -1392,6 +1469,55 @@ namespace CSharpToUppaal.Backend.Services
                         : $"{resultTarget} = {contract.ResultVariable}";
                     _template.AddTransition(waiting, after, update: resultUpdate, synchronization: $"{contract.DoneChannel}?");
                     return new List<string> { after };
+                }
+
+                private (List<string> exits, string value) LowerValueExpression(
+                    ExpressionSyntax expression,
+                    List<string> starts,
+                    string expectedType)
+                {
+                    switch (expression)
+                    {
+                        case InvocationExpressionSyntax invocation when _owner.TryResolveTemplateCall(invocation, out var callee):
+                        {
+                            if (callee.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase))
+                                throw new UppaalGenerationException($"Void function '{callee.Signature}' cannot be used as a value in '{_function.Signature}'.");
+
+                            var temporary = $"calltmp_{++_temporaryIndex}";
+                            _template.Declarations.AppendLine($"{MapType(callee.ReturnType)} {temporary} = {DefaultValue(callee.ReturnType)};");
+                            var exits = BuildTemplateCall(invocation, starts, temporary, "Call");
+                            return (exits, temporary);
+                        }
+                        case ParenthesizedExpressionSyntax parenthesized:
+                        {
+                            var inner = LowerValueExpression(parenthesized.Expression, starts, expectedType);
+                            return (inner.exits, $"({inner.value})");
+                        }
+                        case BinaryExpressionSyntax binary:
+                        {
+                            var left = LowerValueExpression(binary.Left, starts, expectedType);
+                            var right = LowerValueExpression(binary.Right, left.exits, expectedType);
+                            return (right.exits, $"{left.value} {TranslateOperator(binary.OperatorToken.Text)} {right.value}");
+                        }
+                        case PrefixUnaryExpressionSyntax prefix:
+                        {
+                            var operand = LowerValueExpression(prefix.Operand, starts, expectedType);
+                            return (operand.exits, $"{TranslateOperator(prefix.OperatorToken.Text)}{operand.value}");
+                        }
+                        case CastExpressionSyntax cast:
+                            return LowerValueExpression(cast.Expression, starts, expectedType);
+                        case ConditionalExpressionSyntax conditional when ContainsTemplateCall(conditional):
+                            throw new UppaalGenerationException($"A function call inside a conditional expression is not supported in '{_function.Signature}'. Rewrite it as an if statement before conversion.");
+                        default:
+                            return (starts, _owner.TranslateExpression(expression, _function, expectedType));
+                    }
+                }
+
+                private bool ContainsTemplateCall(ExpressionSyntax expression)
+                {
+                    return expression.DescendantNodesAndSelf()
+                        .OfType<InvocationExpressionSyntax>()
+                        .Any(invocation => _owner.TryResolveTemplateCall(invocation, out _));
                 }
 
                 private string BuildDeclarationUpdate(LocalDeclarationStatementSyntax local, out string select)

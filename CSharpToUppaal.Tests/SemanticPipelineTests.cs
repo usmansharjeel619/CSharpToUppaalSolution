@@ -164,7 +164,8 @@ public class SemanticPipelineTests
 
         Assert.Equal(ModelGenerationStatus.Success, model.Status);
         Assert.True(model.GenerationReport.Compatibility.IsReady);
-        Assert.Empty(model.GenerationReport.Compatibility.Issues.Where(i => i.Severity == UppaalCompatibilitySeverity.Error));
+        Assert.DoesNotContain(model.GenerationReport.Compatibility.Issues,
+            i => i.Severity == UppaalCompatibilitySeverity.Error);
         Assert.All(model.GenerationReport.Layout.Templates, t => Assert.Equal(0, t.EdgeCrossingCount));
 
         var doc = XDocument.Parse(RemoveDoctype(model.XmlContent));
@@ -182,6 +183,129 @@ public class SemanticPipelineTests
             .Single(t => t.Element("name")?.Value == "P_Account_Main");
         Assert.Contains(mainTemplate.Descendants("label"), l =>
             l.Attribute("kind")?.Value == "synchronisation" && l.Value == "call_Account_GetBalance!");
+        Assert.Contains("E&lt;&gt; Driver.DriverDone", model.XmlContent);
+    }
+
+    [Fact]
+    public async Task NestedTemplateCallInValueExpressionUsesCallWaitAndTemporary()
+    {
+        const string code = """
+            public class ExpressionCallCase
+            {
+                public static void Main()
+                {
+                    int value = AddOne(2) + 1;
+                }
+
+                public static int AddOne(int value)
+                {
+                    return value + 1;
+                }
+            }
+            """;
+
+        var model = await new UppaalGeneratorService().GenerateModelFromCodeAsync(code, "ExpressionCallModel");
+
+        Assert.Equal(ModelGenerationStatus.Success, model.Status);
+        Assert.True(model.GenerationReport.Compatibility.IsReady);
+        Assert.Contains("call_ExpressionCallCase_AddOne!", model.XmlContent);
+        Assert.Contains("calltmp_1", model.XmlContent);
+        Assert.DoesNotContain(model.GenerationReport.Assumptions, a => a.Category == "TemplateCallExpression");
+    }
+
+    [Fact]
+    public async Task RecursiveCallsAreRejectedBeforeGeneratingADeadlockingModel()
+    {
+        const string code = """
+            public class RecursiveCase
+            {
+                public static void Main()
+                {
+                    int value = Recurse(2);
+                }
+
+                public static int Recurse(int n)
+                {
+                    if (n == 0) return 0;
+                    return Recurse(n - 1);
+                }
+            }
+            """;
+
+        var model = await new UppaalGeneratorService().GenerateModelFromCodeAsync(code, "RecursiveModel");
+
+        Assert.Equal(ModelGenerationStatus.GenerationError, model.Status);
+        Assert.Contains("Recursive C# calls are not supported", model.StatusMessage);
+    }
+
+    [Fact]
+    public async Task TemplateCallsInConditionsAndArgumentsUseTheChannelProtocol()
+    {
+        const string code = """
+            public class ConditionCallCase
+            {
+                public static void Main()
+                {
+                    if (IsPositive(AddOne(0))) { }
+                }
+
+                public static int AddOne(int value) => value + 1;
+                public static bool IsPositive(int value) => value > 0;
+            }
+            """;
+
+        var model = await new UppaalGeneratorService().GenerateModelFromCodeAsync(code, "ConditionCallModel");
+
+        Assert.Equal(ModelGenerationStatus.Success, model.Status);
+        Assert.True(model.GenerationReport.Compatibility.IsReady);
+        Assert.Contains("call_ConditionCallCase_AddOne!", model.XmlContent);
+        Assert.Contains("call_ConditionCallCase_IsPositive!", model.XmlContent);
+    }
+
+    [Fact]
+    public async Task NoMainDriverStartsOnlyCallGraphRoots()
+    {
+        const string code = """
+            public class Chain
+            {
+                public static int Entry() => Helper();
+                public static int Helper() => 1;
+            }
+            """;
+
+        var model = await new UppaalGeneratorService().GenerateModelFromCodeAsync(code, "ChainModel");
+        var doc = XDocument.Parse(RemoveDoctype(model.XmlContent));
+        var driver = doc.Descendants("template").Single(t => t.Element("name")?.Value == "Driver");
+        var syncs = driver.Descendants("label")
+            .Where(label => label.Attribute("kind")?.Value == "synchronisation")
+            .Select(label => label.Value)
+            .ToList();
+
+        Assert.Equal(ModelGenerationStatus.Success, model.Status);
+        Assert.Contains("call_Chain_Entry!", syncs);
+        Assert.DoesNotContain("call_Chain_Helper!", syncs);
+    }
+
+    [Fact]
+    public void CompatibilityValidatorRejectsAQueryWithAnUnknownLocation()
+    {
+        const string xml = """
+            <nta>
+              <declaration></declaration>
+              <template>
+                <name>P</name>
+                <location id="id0"><name>Start</name></location>
+                <init ref="id0" />
+              </template>
+              <system>system P;</system>
+              <queries><query><formula>E&lt;&gt; P.Missing</formula><comment></comment></query></queries>
+            </nta>
+            """;
+
+        var result = new UppaalCompatibilityValidator().Validate(xml);
+
+        Assert.False(result.IsReady);
+        Assert.Contains(result.Issues, i => i.Severity == UppaalCompatibilitySeverity.Error && i.Category == "Query");
     }
 
     [Fact]

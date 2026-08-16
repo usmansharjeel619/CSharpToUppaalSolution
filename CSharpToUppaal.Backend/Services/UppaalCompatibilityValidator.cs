@@ -192,6 +192,18 @@ namespace CSharpToUppaal.Backend.Services
 
         private static void ValidateQueries(UppaalCompatibilityResult result, XElement nta)
         {
+            var locationsByTemplate = nta.Elements("template")
+                .Select(template => new
+                {
+                    Name = template.Element("name")?.Value?.Trim() ?? string.Empty,
+                    Locations = template.Elements("location")
+                        .Select(location => location.Element("name")?.Value?.Trim() ?? string.Empty)
+                        .Where(name => !string.IsNullOrWhiteSpace(name))
+                        .ToHashSet(StringComparer.Ordinal)
+                })
+                .Where(template => !string.IsNullOrWhiteSpace(template.Name))
+                .ToDictionary(template => template.Name, template => template.Locations, StringComparer.Ordinal);
+
             foreach (var query in nta.Descendants("query"))
             {
                 var formula = query.Element("formula")?.Value?.Trim() ?? string.Empty;
@@ -208,6 +220,17 @@ namespace CSharpToUppaal.Backend.Services
                     && !formula.Contains("-->", StringComparison.Ordinal))
                 {
                     Add(result, UppaalCompatibilitySeverity.Warning, "Query", formula, $"Query '{formula}' is not one of the supported UPPAAL symbolic query forms.");
+                }
+
+                foreach (Match reference in Regex.Matches(formula, @"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b"))
+                {
+                    var templateName = reference.Groups[1].Value;
+                    var locationName = reference.Groups[2].Value;
+                    if (locationsByTemplate.TryGetValue(templateName, out var locations) && !locations.Contains(locationName))
+                    {
+                        Add(result, UppaalCompatibilitySeverity.Error, "Query", formula,
+                            $"Query references location '{templateName}.{locationName}', but that location does not exist in the generated template.");
+                    }
                 }
             }
         }
