@@ -337,15 +337,13 @@ namespace CSharpToUppaal.Backend.Services
             private readonly Dictionary<string, FunctionDescriptor> _functionById;
             private readonly Dictionary<string, MethodDeclarationSyntax> _methodById;
             private readonly Dictionary<string, VariableDomain> _domains = new(StringComparer.Ordinal);
-            private readonly Dictionary<string, string> _uppaalFunctionNames = new(StringComparer.Ordinal);
-            private readonly HashSet<string> _usedUppaalFunctionNames = new(StringComparer.Ordinal);
             private readonly HashSet<string> _usedTemplateNames = new(StringComparer.Ordinal);
             private readonly List<TranslationAssumption> _assumptions = new();
-            private readonly HashSet<string> _generatedFunctionIds = new(StringComparer.Ordinal);
             private readonly List<GeneratedQuery> _queries = new();
             private int _globalId;
-            private bool _generateDriver;
-            private readonly Dictionary<string, (string startChan, string doneChan)> _driverChannels = new(StringComparer.Ordinal);
+            private readonly Dictionary<string, FunctionCallContract> _callContracts = new(StringComparer.Ordinal);
+            private readonly Dictionary<string, string> _templateNames = new(StringComparer.Ordinal);
+            private readonly HashSet<string> _usedContractNames = new(StringComparer.Ordinal);
 
             public SemanticUppaalBuilder(
                 CSharpSemanticAnalysisResult analysis,
@@ -360,11 +358,6 @@ namespace CSharpToUppaal.Backend.Services
                     .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
                 _functionById = analysis.Functions.ToDictionary(f => f.Id, StringComparer.Ordinal);
                 _methodById = analysis.MethodDeclarationsById;
-
-                foreach (var function in analysis.Functions)
-                {
-                    _uppaalFunctionNames[function.Id] = MakeUniqueIdentifier($"fn_{function.DisplayName}", _usedUppaalFunctionNames);
-                }
 
                 foreach (var domain in domainOverrides)
                 {
@@ -386,43 +379,28 @@ namespace CSharpToUppaal.Backend.Services
                 globalDeclaration.AppendLine("// Unknowns are represented as finite bounded choices and listed in assumptions.");
                 globalDeclaration.AppendLine();
 
-                foreach (var function in GetDependencyFirstFunctions())
+                var functions = GetDependencyFirstFunctions();
+                foreach (var function in functions)
                 {
                     AddFunctionAssumptions(function);
-                    GenerateGlobalFunction(function, globalDeclaration);
+                    DeclareTemplateCallContract(function, globalDeclaration);
                 }
 
                 var roots = _included.Where(IsRoot).ToList();
                 if (roots.Count == 0 && _included.Count > 0)
                     roots.Add(_included[0]);
 
-                // Generate a Driver process when no Main/entry-point function exists
-                var hasMain = _included.Any(f => f.Name.Equals("Main", StringComparison.OrdinalIgnoreCase));
-                _generateDriver = !hasMain && roots.Count > 0;
-
-                // Precompute template names so Driver can reference them before templates are built
-                var rootInfos = roots.Select(r => (
-                    Function: r,
-                    TemplateName: MakeUniqueIdentifier($"P_{r.DisplayName}", _usedTemplateNames)
-                )).ToList();
-
-                if (_generateDriver)
+                // Every selected or dependency function is a process template.  Calls are
+                // synchronised through its call/done channels; no UPPAAL code functions are emitted.
+                foreach (var function in functions)
                 {
-                    globalDeclaration.AppendLine("// Driver synchronization channels");
-                    foreach (var (func, _) in rootInfos)
-                    {
-                        var startChan = $"start_{Sanitize(func.DisplayName)}";
-                        var doneChan = $"done_{Sanitize(func.DisplayName)}";
-                        _driverChannels[func.Id] = (startChan, doneChan);
-                        globalDeclaration.AppendLine($"chan {startChan};");
-                        globalDeclaration.AppendLine($"chan {doneChan};");
-                    }
-                    globalDeclaration.AppendLine();
+                    _templateNames[function.Id] = MakeUniqueIdentifier($"P_{function.DisplayName}", _usedTemplateNames);
                 }
 
-                foreach (var (root, templateName) in rootInfos)
+                foreach (var function in functions)
                 {
-                    var template = BuildRootTemplate(root, templateName);
+                    var templateName = _templateNames[function.Id];
+                    var template = BuildFunctionTemplate(function, templateName);
                     model.Templates.Add(template);
                     _queries.Add(new GeneratedQuery
                     {
@@ -433,10 +411,10 @@ namespace CSharpToUppaal.Backend.Services
                     });
                 }
 
-                if (_generateDriver && rootInfos.Count > 0)
+                if (roots.Count > 0)
                 {
-                    var driverProcesses = rootInfos
-                        .Select(r => (r.TemplateName, _driverChannels[r.Function.Id].startChan, _driverChannels[r.Function.Id].doneChan))
+                    var driverProcesses = roots
+                        .Select(r => (r, _templateNames[r.Id], _callContracts[r.Id]))
                         .ToList();
                     var driverTemplate = BuildDriverTemplate(driverProcesses);
                     model.Templates.Add(driverTemplate);
@@ -510,6 +488,18 @@ namespace CSharpToUppaal.Backend.Services
 
             private void AddFunctionAssumptions(FunctionDescriptor function)
             {
+                if (ModeOf(function) == FunctionModelingMode.Stub || !_methodById.ContainsKey(function.Id))
+                {
+                    _assumptions.Add(new TranslationAssumption
+                    {
+                        Severity = AssumptionSeverity.Warning,
+                        Category = "Stub",
+                        SymbolName = function.Signature,
+                        Message = $"Function '{function.Signature}' is generated as a stub template.",
+                        IsUserEditable = true
+                    });
+                }
+
                 if (function.IsAsync)
                 {
                     _assumptions.Add(new TranslationAssumption
@@ -535,138 +525,57 @@ namespace CSharpToUppaal.Backend.Services
                 }
             }
 
-            private void GenerateGlobalFunction(FunctionDescriptor function, StringBuilder declarations)
+            private void DeclareTemplateCallContract(FunctionDescriptor function, StringBuilder declarations)
             {
-                if (_generatedFunctionIds.Contains(function.Id))
-                    return;
+                var safeName = MakeUniqueIdentifier(function.DisplayName, _usedContractNames);
+                var contract = new FunctionCallContract(
+                    $"call_{safeName}",
+                    $"done_{safeName}",
+                    $"result_{safeName}",
+                    function.Parameters.ToDictionary(
+                        p => p.Name,
+                        p => $"arg_{safeName}_{Sanitize(p.Name)}",
+                        StringComparer.Ordinal));
+                _callContracts[function.Id] = contract;
 
-                _generatedFunctionIds.Add(function.Id);
-
-                if (ModeOf(function) == FunctionModelingMode.Stub || !_methodById.ContainsKey(function.Id))
+                declarations.AppendLine($"// Template call interface: {function.Signature}");
+                declarations.AppendLine($"chan {contract.CallChannel}, {contract.DoneChannel};");
+                foreach (var parameter in function.Parameters)
                 {
-                    declarations.AppendLine(GenerateStubFunction(function));
-                    declarations.AppendLine();
-                    return;
+                    var domain = GetDomain(function, parameter.Name, parameter.Type, "call parameter");
+                    declarations.AppendLine($"{MapType(parameter.Type)} {contract.ArgumentVariables[parameter.Name]} = {domain.DefaultValue()};");
                 }
 
-                var method = _methodById[function.Id];
-                var functionName = _uppaalFunctionNames[function.Id];
-                var returnType = MapType(function.ReturnType);
-                var parameters = string.Join(", ", function.Parameters.Select(p => $"{MapType(p.Type)} {Sanitize(p.Name)}"));
-
-                declarations.AppendLine($"{returnType} {functionName}({parameters})");
-                declarations.AppendLine("{");
-
-                var localDeclarations = CollectLocalVariables(method)
-                    .Where(v => function.Parameters.All(p => !p.Name.Equals(v.name, StringComparison.Ordinal)))
-                    .GroupBy(v => Sanitize(v.name), StringComparer.Ordinal)
-                    .Select(g => g.First())
-                    .ToList();
-
-                foreach (var local in localDeclarations)
-                    declarations.AppendLine($"  {MapType(local.type)} {Sanitize(local.name)};");
-
-                var writer = new FunctionBodyWriter(this, function);
-                if (method.Body != null)
+                if (!function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase))
                 {
-                    foreach (var statement in method.Body.Statements)
-                        writer.WriteStatement(declarations, statement, 1);
-                }
-                else if (method.ExpressionBody != null)
-                {
-                    declarations.AppendLine($"  return {writer.TranslateExpression(method.ExpressionBody.Expression)};");
+                    var domain = GetDomain(function, "ret", function.ReturnType, "call result");
+                    declarations.AppendLine($"{MapType(function.ReturnType)} {contract.ResultVariable} = {domain.DefaultValue()};");
                 }
 
-                if (!function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase)
-                    && !MethodDefinitelyReturns(method))
-                {
-                    _assumptions.Add(new TranslationAssumption
-                    {
-                        Severity = AssumptionSeverity.Warning,
-                        Category = "Return",
-                        SymbolName = function.Signature,
-                        Message = "A default return was added because not all translated paths were proven to return.",
-                        IsUserEditable = false
-                    });
-                    declarations.AppendLine($"  return {DefaultValue(function.ReturnType)};");
-                }
-
-                declarations.AppendLine("}");
                 declarations.AppendLine();
             }
 
-            private static bool MethodDefinitelyReturns(MethodDeclarationSyntax method)
-            {
-                if (method.ExpressionBody != null)
-                    return true;
-
-                return method.Body != null && StatementListDefinitelyReturns(method.Body.Statements);
-            }
-
-            private static bool StatementListDefinitelyReturns(SyntaxList<StatementSyntax> statements)
-            {
-                foreach (var statement in statements)
-                {
-                    if (StatementDefinitelyReturns(statement))
-                        return true;
-                }
-
-                return false;
-            }
-
-            private static bool StatementDefinitelyReturns(StatementSyntax statement)
-            {
-                return statement switch
-                {
-                    ReturnStatementSyntax => true,
-                    BlockSyntax block => StatementListDefinitelyReturns(block.Statements),
-                    IfStatementSyntax ifStatement => ifStatement.Else != null
-                        && StatementDefinitelyReturns(ifStatement.Statement)
-                        && StatementDefinitelyReturns(ifStatement.Else.Statement),
-                    _ => false
-                };
-            }
-
-            private string GenerateStubFunction(FunctionDescriptor function)
-            {
-                var returnType = MapType(function.ReturnType);
-                var parameters = string.Join(", ", function.Parameters.Select(p => $"{MapType(p.Type)} {Sanitize(p.Name)}"));
-                var body = returnType == "void"
-                    ? string.Empty
-                    : $"{Environment.NewLine}  return {DefaultValue(function.ReturnType)};{Environment.NewLine}";
-
-                _assumptions.Add(new TranslationAssumption
-                {
-                    Severity = AssumptionSeverity.Warning,
-                    Category = "Stub",
-                    SymbolName = function.Signature,
-                    Message = $"Function '{function.Signature}' is generated as a stub.",
-                    IsUserEditable = true
-                });
-
-                return $"{returnType} {_uppaalFunctionNames[function.Id]}({parameters}){{{body}}}";
-            }
-
-            private UppaalTemplate BuildRootTemplate(FunctionDescriptor function, string templateName)
+            private UppaalTemplate BuildFunctionTemplate(FunctionDescriptor function, string templateName)
             {
                 var mode = ModeOf(function);
                 var template = new TemplateBuilder(templateName, () => _globalId++);
                 var method = _methodById.TryGetValue(function.Id, out var foundMethod) ? foundMethod : null;
+                var contract = _callContracts[function.Id];
 
-                template.Declarations.AppendLine($"// Root function: {function.Signature}");
+                template.Declarations.AppendLine($"// Callable function template: {function.Signature}");
                 foreach (var parameter in function.Parameters)
                 {
                     var domain = GetDomain(function, parameter.Name, parameter.Type, "parameter");
-                    template.Declarations.AppendLine($"{domain.ToUppaalDeclType()} {Sanitize(parameter.Name)} = {domain.DefaultValue()};");
+                    template.Declarations.AppendLine($"{MapType(parameter.Type)} {Sanitize(parameter.Name)} = {domain.DefaultValue()};");
                 }
 
                 if (!function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase))
                 {
                     var retDomain = GetDomain(function, "ret", function.ReturnType, "return");
-                    template.Declarations.AppendLine($"{retDomain.ToUppaalDeclType()} ret = {retDomain.DefaultValue()};");
+                    template.Declarations.AppendLine($"{MapType(function.ReturnType)} ret = {retDomain.DefaultValue()};");
                 }
 
-                if (method != null && mode == FunctionModelingMode.ExplicitAutomaton)
+                if (method != null && mode != FunctionModelingMode.Stub)
                 {
                     foreach (var local in CollectLocalVariables(method)
                         .Where(v => function.Parameters.All(p => !p.Name.Equals(v.name, StringComparison.Ordinal)))
@@ -680,53 +589,20 @@ namespace CSharpToUppaal.Backend.Services
                     }
                 }
 
-                // When a Driver process is generated, wrap the process body with
-                // channel-based synchronization so the Driver can sequence execution.
-                var useDriverSync = false;
-                var driverStartChan = string.Empty;
-                var driverDoneChan = string.Empty;
-                if (_generateDriver && _driverChannels.TryGetValue(function.Id, out var driverChans))
-                {
-                    useDriverSync = true;
-                    driverStartChan = driverChans.startChan;
-                    driverDoneChan = driverChans.doneChan;
-                }
-
-                string initialLocId, entryLocId;
-                if (useDriverSync)
-                {
-                    initialLocId = template.AddLocation("Waiting", initial: true);
-                    entryLocId = template.AddLocation("Entry");
-                    template.AddTransition(initialLocId, entryLocId, synchronization: $"{driverStartChan}?");
-                }
-                else
-                {
-                    entryLocId = template.AddLocation("Entry", initial: true);
-                    initialLocId = entryLocId;
-                }
+                var waiting = template.AddLocation("Waiting", initial: true);
+                var entryLocId = template.AddLocation("Entry");
+                var parameterCopies = function.Parameters
+                    .Select(p => $"{Sanitize(p.Name)} = {contract.ArgumentVariables[p.Name]}");
+                template.AddTransition(waiting, entryLocId,
+                    update: string.Join(", ", parameterCopies),
+                    synchronization: $"{contract.CallChannel}?");
 
                 var done = template.AddLocation("Done");
                 var start = entryLocId;
-                var initSelects = new List<string>();
-                var initUpdates = new List<string>();
-                foreach (var parameter in function.Parameters)
-                {
-                    var domain = GetDomain(function, parameter.Name, parameter.Type, "parameter");
-                    var selectName = $"{Sanitize(parameter.Name)}_in";
-                    initSelects.Add($"{selectName}:{domain.ToUppaalSelectType()}");
-                    initUpdates.Add($"{Sanitize(parameter.Name)} = {selectName}");
-                }
 
-                if (initSelects.Count > 0)
+                if (mode == FunctionModelingMode.Stub || method == null)
                 {
-                    var inputs = template.AddLocation("Inputs");
-                    template.AddTransition(entryLocId, inputs, select: string.Join(", ", initSelects), update: string.Join(", ", initUpdates));
-                    start = inputs;
-                }
-
-                if (mode == FunctionModelingMode.CodeBlock || mode == FunctionModelingMode.Stub || method == null)
-                {
-                    var update = BuildRootCodeBlockUpdate(function, mode);
+                    var update = BuildStubTemplateUpdate(function);
                     template.AddTransition(start, done, select: update.select, update: update.update);
                 }
                 else
@@ -742,15 +618,17 @@ namespace CSharpToUppaal.Backend.Services
                         template.AddTransition(exit, done);
                 }
 
-                if (useDriverSync)
-                    template.AddTransition(done, initialLocId, synchronization: $"{driverDoneChan}!");
-                else
-                    template.AddTransition(done, entryLocId);
+                var resultReady = template.AddLocation("ResultReady");
+                var resultUpdate = function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase)
+                    ? string.Empty
+                    : $"{contract.ResultVariable} = ret";
+                template.AddTransition(done, resultReady, update: resultUpdate);
+                template.AddTransition(resultReady, waiting, synchronization: $"{contract.DoneChannel}!");
 
                 return template.ToTemplate();
             }
 
-            private UppaalTemplate BuildDriverTemplate(List<(string templateName, string startChan, string doneChan)> processes)
+            private UppaalTemplate BuildDriverTemplate(List<(FunctionDescriptor function, string templateName, FunctionCallContract contract)> processes)
             {
                 var driver = new TemplateBuilder(MakeUniqueIdentifier("Driver", _usedTemplateNames), () => _globalId++);
                 driver.Declarations.AppendLine("// Auto-generated driver: sequences all process templates in order");
@@ -758,14 +636,26 @@ namespace CSharpToUppaal.Backend.Services
                 var initial = driver.AddLocation("DriverEntry", initial: true);
                 var prev = initial;
 
-                foreach (var (tmplName, startChan, doneChan) in processes)
+                foreach (var (function, tmplName, contract) in processes)
                 {
                     var safe = Sanitize(tmplName);
+                    var calling = driver.AddLocation($"Calling_{safe}");
+                    var selects = new List<string>();
+                    var updates = new List<string>();
+                    foreach (var parameter in function.Parameters)
+                    {
+                        var domain = GetDomain(function, parameter.Name, parameter.Type, "driver input");
+                        var choice = $"{Sanitize(tmplName)}_{Sanitize(parameter.Name)}_in";
+                        selects.Add($"{choice}:{domain.ToUppaalSelectType()}");
+                        updates.Add($"{contract.ArgumentVariables[parameter.Name]} = {choice}");
+                    }
+                    driver.AddTransition(prev, calling, select: string.Join(", ", selects), update: string.Join(", ", updates));
+
                     var waiting = driver.AddLocation($"Waiting_{safe}");
-                    driver.AddTransition(prev, waiting, synchronization: $"{startChan}!");
+                    driver.AddTransition(calling, waiting, synchronization: $"{contract.CallChannel}!");
 
                     var after = driver.AddLocation($"After_{safe}");
-                    driver.AddTransition(waiting, after, synchronization: $"{doneChan}?");
+                    driver.AddTransition(waiting, after, synchronization: $"{contract.DoneChannel}?");
                     prev = after;
                 }
 
@@ -776,22 +666,37 @@ namespace CSharpToUppaal.Backend.Services
                 return driver.ToTemplate();
             }
 
-            private (string select, string update) BuildRootCodeBlockUpdate(FunctionDescriptor function, FunctionModelingMode mode)
+            private (string select, string update) BuildStubTemplateUpdate(FunctionDescriptor function)
             {
-                if (mode == FunctionModelingMode.Stub)
-                {
-                    if (function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase))
-                        return (string.Empty, string.Empty);
+                if (function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase))
+                    return (string.Empty, string.Empty);
 
-                    var domain = GetDomain(function, "ret", function.ReturnType, "stub return");
-                    return ($"ret_choice:{domain.ToUppaalSelectType()}", $"ret = ret_choice");
+                var domain = GetDomain(function, "ret", function.ReturnType, "stub return");
+                return ($"ret_choice:{domain.ToUppaalSelectType()}", $"ret = ret_choice");
+            }
+
+            private sealed record FunctionCallContract(
+                string CallChannel,
+                string DoneChannel,
+                string ResultVariable,
+                Dictionary<string, string> ArgumentVariables);
+
+            private bool TryResolveTemplateCall(InvocationExpressionSyntax invocation, out FunctionDescriptor function)
+            {
+                function = null!;
+                var info = _analysis.SemanticModel.GetSymbolInfo(invocation);
+                var symbol = info.Symbol as IMethodSymbol ?? info.CandidateSymbols.OfType<IMethodSymbol>().FirstOrDefault();
+                if (symbol == null)
+                    return false;
+
+                var id = CSharpSemanticAnalyzer.ToFunctionId(symbol);
+                if (_callContracts.ContainsKey(id) && _functionById.TryGetValue(id, out var resolved))
+                {
+                    function = resolved!;
+                    return true;
                 }
 
-                var args = string.Join(", ", function.Parameters.Select(p => Sanitize(p.Name)));
-                var call = $"{_uppaalFunctionNames[function.Id]}({args})";
-                return function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase)
-                    ? (string.Empty, call)
-                    : (string.Empty, $"ret = {call}");
+                return false;
             }
 
             private VariableDomain GetDomain(FunctionDescriptor function, string variableName, string type, string source)
@@ -964,10 +869,19 @@ namespace CSharpToUppaal.Backend.Services
                 if (symbol != null)
                 {
                     var id = CSharpSemanticAnalyzer.ToFunctionId(symbol);
-                    if (_uppaalFunctionNames.TryGetValue(id, out var functionName))
+                    if (_callContracts.ContainsKey(id))
                     {
-                        var args = string.Join(", ", invocation.ArgumentList.Arguments.Select(a => TranslateExpression(a.Expression, currentFunction, "int")));
-                        return $"{functionName}({args})";
+                        unknownCallName = symbol.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
+                        _assumptions.Add(new TranslationAssumption
+                        {
+                            Severity = AssumptionSeverity.Warning,
+                            Category = "TemplateCallExpression",
+                            SymbolName = unknownCallName,
+                            Location = currentFunction.Signature,
+                            Message = "A function call nested in an expression was abstracted; direct calls use synchronised templates.",
+                            IsUserEditable = true
+                        });
+                        return DefaultValue(fallbackType);
                     }
 
                     unknownCallName = symbol.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
@@ -1246,6 +1160,13 @@ namespace CSharpToUppaal.Backend.Services
 
                 public List<string> BuildReturnExpression(ExpressionSyntax expression, List<string> starts)
                 {
+                    if (expression is InvocationExpressionSyntax invocation && _owner.TryResolveTemplateCall(invocation, out _))
+                    {
+                        foreach (var exit in BuildTemplateCall(invocation, starts, _function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase) ? null : "ret", "Return"))
+                            _template.AddTransition(exit, _done);
+                        return new List<string>();
+                    }
+
                     var update = _function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase)
                         ? string.Empty
                         : $"ret = {_owner.TranslateExpression(expression, _function, _function.ReturnType)}";
@@ -1276,12 +1197,30 @@ namespace CSharpToUppaal.Backend.Services
 
                 private List<string> BuildExpressionStatement(ExpressionStatementSyntax statement, List<string> starts)
                 {
+                    if (statement.Expression is InvocationExpressionSyntax invocation && _owner.TryResolveTemplateCall(invocation, out _))
+                        return BuildTemplateCall(invocation, starts, null, "Call");
+
+                    if (statement.Expression is AssignmentExpressionSyntax assignment
+                        && assignment.Right is InvocationExpressionSyntax assignedCall
+                        && _owner.TryResolveTemplateCall(assignedCall, out _))
+                    {
+                        return BuildTemplateCall(assignedCall, starts,
+                            _owner.TranslateExpression(assignment.Left, _function, "int"), "Call");
+                    }
+
                     var update = BuildExpressionUpdate(statement.Expression, out var select);
                     return BuildSimple(starts, "Stmt", update, select);
                 }
 
                 private List<string> BuildReturn(ReturnStatementSyntax statement, List<string> starts)
                 {
+                    if (statement.Expression is InvocationExpressionSyntax invocation && _owner.TryResolveTemplateCall(invocation, out _))
+                    {
+                        foreach (var exit in BuildTemplateCall(invocation, starts, _function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase) ? null : "ret", "Return"))
+                            _template.AddTransition(exit, _done);
+                        return new List<string>();
+                    }
+
                     var update = string.Empty;
                     if (statement.Expression != null && !_function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase))
                         update = $"ret = {_owner.TranslateExpression(statement.Expression, _function, _function.ReturnType)}";
@@ -1417,8 +1356,47 @@ namespace CSharpToUppaal.Backend.Services
 
                 private List<string> BuildLocalDeclaration(LocalDeclarationStatementSyntax local, List<string> starts)
                 {
+                    if (local.Declaration.Variables.Count == 1
+                        && local.Declaration.Variables[0].Initializer?.Value is InvocationExpressionSyntax invocation
+                        && _owner.TryResolveTemplateCall(invocation, out _))
+                    {
+                        return BuildTemplateCall(invocation, starts,
+                            Sanitize(local.Declaration.Variables[0].Identifier.Text), "Call");
+                    }
+
                     var update = BuildDeclarationUpdate(local, out var select);
                     return BuildSimple(starts, "Declare", update, select);
+                }
+
+                private List<string> BuildTemplateCall(
+                    InvocationExpressionSyntax invocation,
+                    List<string> starts,
+                    string? resultTarget,
+                    string locationPrefix)
+                {
+                    if (!_owner.TryResolveTemplateCall(invocation, out var callee))
+                        return BuildSimple(starts, locationPrefix, string.Empty);
+
+                    var contract = _owner._callContracts[callee.Id];
+                    var prepare = _template.AddLocation($"{locationPrefix}_{Sanitize(callee.Name)}");
+                    var argumentUpdates = callee.Parameters
+                        .Select((parameter, index) => index < invocation.ArgumentList.Arguments.Count
+                            ? $"{contract.ArgumentVariables[parameter.Name]} = {_owner.TranslateExpression(invocation.ArgumentList.Arguments[index].Expression, _function, parameter.Type)}"
+                            : $"{contract.ArgumentVariables[parameter.Name]} = {DefaultValue(parameter.Type)}")
+                        .ToList();
+                    foreach (var start in starts)
+                        _template.AddTransition(start, prepare, update: string.Join(", ", argumentUpdates));
+
+                    var waiting = _template.AddLocation($"Await_{Sanitize(callee.Name)}");
+                    _template.AddTransition(prepare, waiting, synchronization: $"{contract.CallChannel}!");
+
+                    var after = _template.AddLocation($"After_{Sanitize(callee.Name)}");
+                    var resultUpdate = string.IsNullOrWhiteSpace(resultTarget)
+                        || callee.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase)
+                        ? string.Empty
+                        : $"{resultTarget} = {contract.ResultVariable}";
+                    _template.AddTransition(waiting, after, update: resultUpdate, synchronization: $"{contract.DoneChannel}?");
+                    return new List<string> { after };
                 }
 
                 private string BuildDeclarationUpdate(LocalDeclarationStatementSyntax local, out string select)

@@ -153,7 +153,7 @@ public class SemanticPipelineTests
     }
 
     [Fact]
-    public async Task GeneratedModelIsReadyForExportAndKeepsFinalIdleLoop()
+    public async Task GeneratedModelIsReadyForExportAndUsesTemplateChannelsForCalls()
     {
         var generator = new UppaalGeneratorService();
         var model = await generator.GenerateModelFromRequestAsync(new ModelGenerationRequest
@@ -170,19 +170,18 @@ public class SemanticPipelineTests
         var doc = XDocument.Parse(RemoveDoctype(model.XmlContent));
         AssertLocationNamesAreUnique(doc);
 
-        var doneIds = doc.Descendants("location")
-            .Where(l => l.Element("name")?.Value == "Done")
-            .Select(l => l.Attribute("id")?.Value)
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .ToHashSet();
+        Assert.Equal(3, doc.Descendants("template").Count()); // GetBalance, Main, Driver
+        Assert.Contains("chan call_Account_GetBalance, done_Account_GetBalance;", model.XmlContent);
+        Assert.Contains("call_Account_GetBalance!", model.XmlContent);
+        Assert.Contains("done_Account_GetBalance?", model.XmlContent);
+        Assert.Contains("int result_Account_GetBalance = 0;", model.XmlContent);
+        Assert.DoesNotContain("int[-10,10] result_Account_GetBalance", model.XmlContent);
+        Assert.DoesNotContain("fn_Account_GetBalance(", model.XmlContent);
 
-        Assert.NotEmpty(doneIds);
-        Assert.Contains(doc.Descendants("transition"), t =>
-        {
-            var source = t.Element("source")?.Attribute("ref")?.Value;
-            var target = t.Element("target")?.Attribute("ref")?.Value;
-            return source != null && source == target && doneIds.Contains(source) && !t.Elements("label").Any();
-        });
+        var mainTemplate = doc.Descendants("template")
+            .Single(t => t.Element("name")?.Value == "P_Account_Main");
+        Assert.Contains(mainTemplate.Descendants("label"), l =>
+            l.Attribute("kind")?.Value == "synchronisation" && l.Value == "call_Account_GetBalance!");
     }
 
     [Fact]
@@ -219,7 +218,8 @@ public class SemanticPipelineTests
         });
 
         var doc = XDocument.Parse(RemoveDoctype(model.XmlContent));
-        var template = Assert.Single(doc.Descendants("template"));
+        var template = doc.Descendants("template")
+            .Single(t => t.Element("name")?.Value == "P_Account_Main");
         var locations = template.Elements("location").ToList();
         var entry = Assert.Single(locations, l => l.Element("name")?.Value == "Entry");
         var done = Assert.Single(locations, l => l.Element("name")?.Value == "Done");
