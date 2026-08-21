@@ -95,11 +95,14 @@ namespace CSharpToUppaal.Backend.Services
                 var included = analysis.ResolveClosure(selections);
                 var externalCalls = included.SelectMany(function => function.UnresolvedCalls)
                     .Distinct(StringComparer.Ordinal).OrderBy(call => call, StringComparer.Ordinal).ToList();
-                if (externalCalls.Count > 0 && !request.ExternalStubAssumptionsConfirmed)
+                var abstractedLocalCalls = analysis.GetAutomaticallyAbstractedCalls(included);
+                var reviewedStubCalls = externalCalls.Concat(abstractedLocalCalls)
+                    .Distinct(StringComparer.Ordinal).OrderBy(call => call, StringComparer.Ordinal).ToList();
+                if (reviewedStubCalls.Count > 0 && !request.ExternalStubAssumptionsConfirmed)
                 {
                     return CreateBlockedModel(request.ProjectName,
-                        "Review and confirm the bounded assumptions for external calls before generating the model.",
-                        externalCalls, "ExternalStubReview");
+                        "Review and confirm the bounded assumptions for external and omitted adapter calls before generating the model.",
+                        reviewedStubCalls, "ExternalStubReview");
                 }
 
                 var requirementQueries = await InterpretRequirementsAsync(request, analysis).ConfigureAwait(false);
@@ -117,6 +120,17 @@ namespace CSharpToUppaal.Backend.Services
                         Category = "ExternalStub",
                         SymbolName = externalCall,
                         Message = $"External call '{externalCall}' is represented as a bounded nondeterministic stub.",
+                        IsUserEditable = true
+                    });
+                }
+                foreach (var abstractedCall in abstractedLocalCalls)
+                {
+                    model.GenerationReport.Assumptions.Add(new TranslationAssumption
+                    {
+                        Severity = AssumptionSeverity.Warning,
+                        Category = "LocalAdapterStub",
+                        SymbolName = abstractedCall,
+                        Message = $"Non-logical local adapter call '{abstractedCall}' is omitted from the UPPAAL model and represented by a bounded assumption.",
                         IsUserEditable = true
                     });
                 }

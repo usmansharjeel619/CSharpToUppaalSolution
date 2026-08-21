@@ -119,7 +119,12 @@ public class SemanticPipelineTests
         const string code = """
             public class RelayCommandAttribute : System.Attribute { }
             public interface IStore { void Save(); }
-            public class Store : IStore { public void Save() { } }
+            public class Attendance { public bool IsSaved { get; set; } }
+            public class Store : IStore
+            {
+                private readonly Attendance _attendance = new Attendance();
+                public void Save() { _attendance.IsSaved = true; }
+            }
             public class ScreenViewModel
             {
                 [RelayCommand]
@@ -164,6 +169,95 @@ public class SemanticPipelineTests
         var recommended = analysis.RecommendDefaultEntryPoints();
 
         Assert.Empty(recommended);
+    }
+
+    [Fact]
+    public async Task IntelligentScopeExcludesDialogQueryAndPersistencePlumbing()
+    {
+        const string code = """
+            using System;
+            public class RelayCommandAttribute : Attribute { }
+            public class Attendee { public bool IsCheckedIn { get; set; } public string Name { get; set; } = ""; }
+            public interface IAttendeeRepository
+            {
+                void CheckIn();
+                void Add(Attendee attendee);
+                void Search(string term);
+            }
+            public class AttendeeRepository : IAttendeeRepository
+            {
+                private readonly Attendee _attendee = new Attendee();
+                public void CheckIn() { _attendee.IsCheckedIn = true; }
+                public void Add(Attendee attendee) { }
+                public void Search(string term) { }
+            }
+            public class DialogService { public void ShowDialog() { } }
+            public class ExcelService
+            {
+                public void Import(IAttendeeRepository repository) { repository.Add(new Attendee { Name = "Imported" }); }
+                public void Export() { }
+            }
+            public class MainViewModel
+            {
+                [RelayCommand] private void CheckIn(IAttendeeRepository repository) { repository.CheckIn(); }
+                [RelayCommand] private void Search(IAttendeeRepository repository) { repository.Search("x"); }
+                [RelayCommand] private void OpenDialog(DialogService dialog) { dialog.ShowDialog(); }
+                [RelayCommand] private void Import(ExcelService excel) { excel.Import(null!); }
+                [RelayCommand] private void Export(ExcelService excel) { excel.Export(); }
+            }
+            public class AddAttendeeViewModel
+            {
+                [RelayCommand] private void Save(IAttendeeRepository repository) { repository.Add(new Attendee { Name = "New" }); }
+            }
+            """;
+
+        var analysis = await new CSharpSemanticAnalyzer().AnalyzeSourceCodeAsync(code, "ViewModels/MainViewModel.cs");
+        var recommended = analysis.RecommendDefaultEntryPoints();
+        var names = recommended.Keys
+            .Select(id => analysis.Functions.Single(function => function.Id == id))
+            .Select(function => $"{function.ContainingType}.{function.Name}")
+            .OrderBy(name => name)
+            .ToArray();
+
+        Assert.Equal(["AddAttendeeViewModel.Save", "AttendeeRepository.CheckIn", "ExcelService.Import"], names);
+
+        var closure = analysis.ResolveClosure(analysis.Functions.Select(function => new FunctionSelection
+        {
+            FunctionId = function.Id,
+            IsSelected = recommended.ContainsKey(function.Id),
+            Mode = FunctionModelingMode.ExplicitAutomaton
+        }));
+        var includedNames = closure.Select(function => $"{function.ContainingType}.{function.Name}").OrderBy(name => name).ToArray();
+        Assert.Equal(["AddAttendeeViewModel.Save", "AttendeeRepository.CheckIn", "ExcelService.Import"], includedNames);
+        Assert.Contains(analysis.GetAutomaticallyAbstractedCalls(closure), signature => signature.Contains("AttendeeRepository.Add", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task IntelligentScopeRecognizesDomainStateWritesWhenAnAdapterDependencyIsUnresolved()
+    {
+        const string code = """
+            public class RelayCommandAttribute : System.Attribute { }
+            public class Attendee { public bool IsCheckedIn { get; set; } }
+            public class AttendeeRepository
+            {
+                private MissingDbContext _context = null!;
+                public void CheckInAttendee()
+                {
+                    var attendee = _context.Find();
+                    attendee.IsCheckedIn = true;
+                }
+            }
+            public class MainViewModel
+            {
+                [RelayCommand] private void CheckIn(AttendeeRepository repository) => repository.CheckInAttendee();
+            }
+            """;
+
+        var analysis = await new CSharpSemanticAnalyzer().AnalyzeSourceCodeAsync(code, "ViewModels/MainViewModel.cs");
+        var recommended = analysis.RecommendDefaultEntryPoints();
+
+        var checkIn = Assert.Single(analysis.Functions, function => function.Name == "CheckInAttendee");
+        Assert.Equal("Business operation reached from UI", recommended[checkIn.Id]);
     }
 
     [Fact]

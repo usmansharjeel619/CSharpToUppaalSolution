@@ -25,6 +25,7 @@ public class WorkspaceLoadingTests
             var analyzer = new CSharpSemanticAnalyzer();
             var analysis = await analyzer.AnalyzeProjectAsync(app.RoslynProject!);
             var main = Assert.Single(analysis.Functions, function => function.Name == "Main");
+            Assert.DoesNotContain(analysis.Functions, function => function.Name == "InitializeComponent");
             Assert.Contains(main.UnresolvedCalls, call => call.Contains("Fixture.Service.Calculator.Calculate", StringComparison.Ordinal));
             Assert.DoesNotContain(analysis.Diagnostics, diagnostic => diagnostic.Contains("CS0246", StringComparison.Ordinal));
 
@@ -106,11 +107,13 @@ public class WorkspaceLoadingTests
         var service = Path.Combine(root, "Service");
         Directory.CreateDirectory(app);
         Directory.CreateDirectory(service);
+        Directory.CreateDirectory(Path.Combine(app, "obj"));
         File.WriteAllText(Path.Combine(service, "Fixture.Service.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>");
         File.WriteAllText(Path.Combine(service, "Calculator.cs"), "namespace Fixture.Service; public static class Calculator { public static int Calculate(int x) => x + 1; }");
         var appProject = Path.Combine(app, "Fixture.App.csproj");
-        File.WriteAllText(appProject, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup><ItemGroup><ProjectReference Include=\"..\\Service\\Fixture.Service.csproj\" /></ItemGroup></Project>");
+        File.WriteAllText(appProject, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup><ItemGroup><ProjectReference Include=\"..\\Service\\Fixture.Service.csproj\" /><Compile Include=\"obj\\Generated.g.cs\" /></ItemGroup></Project>");
         File.WriteAllText(Path.Combine(app, "Program.cs"), "using Fixture.Service; public static class Program { public static void Main() { int answer = Calculator.Calculate(1); } }");
+        File.WriteAllText(Path.Combine(app, "obj", "Generated.g.cs"), "public class GeneratedView { public void InitializeComponent() { } }");
         var solutionPath = Path.Combine(root, "Fixture.sln");
         File.WriteAllText(solutionPath, """
             Microsoft Visual Studio Solution File, Format Version 12.00

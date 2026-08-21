@@ -89,6 +89,16 @@ namespace CSharpToUppaal.Backend.Services
             {
                 var currentId = pending.Dequeue();
                 if (!visited.Add(currentId) || !byId.TryGetValue(currentId, out var current)) continue;
+
+                // A ViewModel command can itself hold a domain rule (for example, it creates
+                // a domain entity or changes domain state). Keep that rule, but do not promote
+                // its UI/persistence calls as separate entry points.
+                if (HasBusinessLogic(current))
+                {
+                    result.TryAdd(currentId, "Business rule at UI boundary");
+                    continue;
+                }
+
                 foreach (var callId in current.DirectCallIds)
                 {
                     if (!byId.TryGetValue(callId, out var callee) || IsInfrastructure(callee)) continue;
@@ -98,7 +108,15 @@ namespace CSharpToUppaal.Backend.Services
                         continue;
                     }
 
-                    result.TryAdd(callId, "Business operation reached from UI");
+                    if (HasBusinessLogic(callee))
+                    {
+                        result.TryAdd(callId, "Business operation reached from UI");
+                        continue;
+                    }
+
+                    // Service/repository/UI adapters frequently forward an interaction to a
+                    // deeper operation. Do not model the adapter; follow its local calls.
+                    pending.Enqueue(callId);
                 }
             }
 
@@ -141,6 +159,102 @@ namespace CSharpToUppaal.Backend.Services
                    || source.Contains("\\ViewModels\\", StringComparison.OrdinalIgnoreCase);
         }
 
+        private bool IsAutomaticAbstraction(FunctionDescriptor function) =>
+            !HasBusinessLogic(function) && (IsPresentationBoundary(function) || IsTechnicalBoundary(function));
+
+        private static bool IsTechnicalBoundary(FunctionDescriptor function)
+        {
+            var source = function.SourceFile.Replace('/', '\\');
+            return function.ContainingType.EndsWith("Repository", StringComparison.OrdinalIgnoreCase)
+                   || function.ContainingType.EndsWith("DbContext", StringComparison.OrdinalIgnoreCase)
+                   || function.ContainingType.EndsWith("DialogService", StringComparison.OrdinalIgnoreCase)
+                   || function.ContainingType.EndsWith("Client", StringComparison.OrdinalIgnoreCase)
+                   || function.ContainingType.EndsWith("Gateway", StringComparison.OrdinalIgnoreCase)
+                   || source.Contains("\\Repositories\\", StringComparison.OrdinalIgnoreCase)
+                   || source.Contains("\\Data\\", StringComparison.OrdinalIgnoreCase)
+                   || source.Contains("\\Infrastructure\\", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Detects domain work from the method body rather than its folder or method name.
+        /// A source-domain object construction, a change to a source-domain object's state,
+        /// or a numeric computation is considered model-worthy. UI collection updates,
+        /// dialogs, database queries, and file/package calls are intentionally not.
+        /// </summary>
+        private bool HasBusinessLogic(FunctionDescriptor function)
+        {
+            if (!MethodDeclarationsById.TryGetValue(function.Id, out var declaration)) return false;
+            var semanticModel = GetSemanticModel(declaration);
+
+            foreach (var creation in declaration.DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
+            {
+                var createdType = semanticModel.GetTypeInfo(creation).Type;
+                if (IsSourceDomainType(createdType)) return true;
+            }
+
+            foreach (var assignment in declaration.DescendantNodes().OfType<AssignmentExpressionSyntax>())
+            {
+                if (semanticModel.GetSymbolInfo(assignment.Left).Symbol is IPropertySymbol property &&
+                    IsSourceDomainType(property.ContainingType))
+                    return true;
+
+                // A missing NuGet asset can make a local variable's inferred type an error
+                // symbol (for example, EF's FindAsync result). The assignment can still be
+                // recognised reliably when it writes a property declared on a source-domain
+                // type, so do not lose a state transition merely because an adapter failed
+                // to restore.
+                if (assignment.Left is MemberAccessExpressionSyntax member &&
+                    IsKnownSourceDomainProperty(member.Name.Identifier.ValueText))
+                    return true;
+            }
+
+            return declaration.DescendantNodes().OfType<BinaryExpressionSyntax>()
+                .Any(expression => expression.Kind() is SyntaxKind.AddExpression or SyntaxKind.SubtractExpression
+                    or SyntaxKind.MultiplyExpression or SyntaxKind.DivideExpression or SyntaxKind.ModuloExpression)
+                   && !IsLikelyExternalIntegration(function);
+        }
+
+        private bool IsKnownSourceDomainProperty(string propertyName) =>
+            Roots.SelectMany(root => root.DescendantNodes().OfType<PropertyDeclarationSyntax>())
+                .Any(property => property.Identifier.ValueText.Equals(propertyName, StringComparison.Ordinal) &&
+                    IsSourceDomainType(GetSemanticModel(property).GetDeclaredSymbol(property)?.ContainingType));
+
+        private static bool IsLikelyExternalIntegration(FunctionDescriptor function)
+        {
+            var typeName = function.ContainingType;
+            return typeName.Contains("Excel", StringComparison.OrdinalIgnoreCase)
+                   || typeName.Contains("File", StringComparison.OrdinalIgnoreCase)
+                   || typeName.Contains("Dialog", StringComparison.OrdinalIgnoreCase)
+                   || typeName.Contains("Report", StringComparison.OrdinalIgnoreCase)
+                   || function.UnresolvedCalls.Any(call => call.Contains("OfficeOpenXml", StringComparison.OrdinalIgnoreCase)
+                       || call.Contains("System.IO", StringComparison.OrdinalIgnoreCase)
+                       || call.Contains("Microsoft.Win32", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private bool IsSourceDomainType(ITypeSymbol? type)
+        {
+            if (type is not INamedTypeSymbol namedType || IsPresentationOrInfrastructureType(namedType)) return false;
+            return namedType.Locations.Any(location => location.IsInSource &&
+                location.SourceTree != null && SemanticModels.ContainsKey(location.SourceTree));
+        }
+
+        private static bool IsPresentationOrInfrastructureType(INamedTypeSymbol type)
+        {
+            var typeName = type.Name;
+            var containingNamespace = type.ContainingNamespace?.ToDisplayString() ?? string.Empty;
+            return typeName.EndsWith("ViewModel", StringComparison.OrdinalIgnoreCase)
+                   || typeName.EndsWith("View", StringComparison.OrdinalIgnoreCase)
+                   || typeName.EndsWith("Window", StringComparison.OrdinalIgnoreCase)
+                   || typeName.EndsWith("Page", StringComparison.OrdinalIgnoreCase)
+                   || typeName.EndsWith("Control", StringComparison.OrdinalIgnoreCase)
+                   || typeName.EndsWith("Repository", StringComparison.OrdinalIgnoreCase)
+                   || typeName.EndsWith("DbContext", StringComparison.OrdinalIgnoreCase)
+                   || containingNamespace.Contains(".Views", StringComparison.OrdinalIgnoreCase)
+                   || containingNamespace.Contains(".ViewModels", StringComparison.OrdinalIgnoreCase)
+                   || containingNamespace.Contains(".Data", StringComparison.OrdinalIgnoreCase)
+                   || containingNamespace.Contains(".Migrations", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static bool IsInfrastructure(FunctionDescriptor function)
         {
             var source = function.SourceFile.Replace('/', '\\');
@@ -175,11 +289,36 @@ namespace CSharpToUppaal.Backend.Services
                 included[id] = function;
                 if (selectionById.TryGetValue(id, out var selection) && selection.Mode == FunctionModelingMode.Stub) continue;
                 foreach (var callId in function.DirectCallIds)
+                {
+                    if (!functionById.TryGetValue(callId, out var callee)) continue;
+                    // Do not create templates for non-logical presentation/persistence
+                    // adapters by default. The generator exposes them as reviewed bounded
+                    // assumptions unless the user explicitly selects one as an entry point.
+                    if ((!selectionById.TryGetValue(callId, out var calleeSelection) || !calleeSelection.IsSelected) &&
+                        IsAutomaticAbstraction(callee))
+                        continue;
                     if (!included.ContainsKey(callId)) stack.Push(callId);
+                }
             }
 
             return included.Values.OrderBy(f => f.SourceFile, StringComparer.OrdinalIgnoreCase).ThenBy(f => f.LineNumber)
                 .ThenBy(f => f.Signature, StringComparer.Ordinal).ToList();
+        }
+
+        /// <summary>Lists local adapter calls omitted from the model. These must be reviewed
+        /// as bounded abstractions before model generation, just like external calls.</summary>
+        public IReadOnlyList<string> GetAutomaticallyAbstractedCalls(IEnumerable<FunctionDescriptor> included)
+        {
+            var includedList = included.ToList();
+            var includedIds = includedList.Select(function => function.Id).ToHashSet(StringComparer.Ordinal);
+            var byId = Functions.ToDictionary(function => function.Id, StringComparer.Ordinal);
+            return includedList
+                .SelectMany(function => function.DirectCallIds)
+                .Distinct(StringComparer.Ordinal)
+                .Where(id => !includedIds.Contains(id) && byId.TryGetValue(id, out var function) && IsAutomaticAbstraction(function))
+                .Select(id => byId[id].Signature)
+                .OrderBy(signature => signature, StringComparer.Ordinal)
+                .ToList();
         }
     }
 
@@ -220,7 +359,7 @@ namespace CSharpToUppaal.Backend.Services
             var compilation = await Task.Run(() => project.GetCompilationAsync()).ConfigureAwait(false)
                               ?? throw new InvalidOperationException($"Unable to create a compilation for '{project.Name}'.");
             var roots = new List<(SyntaxTree Tree, CompilationUnitSyntax Root)>();
-            foreach (var document in project.Documents.Where(document => document.SourceCodeKind == SourceCodeKind.Regular))
+            foreach (var document in project.Documents.Where(IsUserAuthoredSourceDocument))
             {
                 var tree = await document.GetSyntaxTreeAsync().ConfigureAwait(false);
                 var root = await document.GetSyntaxRootAsync().ConfigureAwait(false) as CompilationUnitSyntax;
@@ -247,6 +386,20 @@ namespace CSharpToUppaal.Backend.Services
             ExtractFunctions(result);
             ExtractCalls(result);
             return result;
+        }
+
+        private static bool IsUserAuthoredSourceDocument(Document document)
+        {
+            if (document.SourceCodeKind != SourceCodeKind.Regular || string.IsNullOrWhiteSpace(document.FilePath)) return false;
+            var path = document.FilePath.Replace('/', '\\');
+            var fileName = Path.GetFileName(path);
+            return !path.Contains("\\obj\\", StringComparison.OrdinalIgnoreCase)
+                   && !path.Contains("\\bin\\", StringComparison.OrdinalIgnoreCase)
+                   && !fileName.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase)
+                   && !fileName.EndsWith(".g.i.cs", StringComparison.OrdinalIgnoreCase)
+                   && !fileName.EndsWith(".designer.cs", StringComparison.OrdinalIgnoreCase)
+                   && !fileName.Contains("AssemblyInfo", StringComparison.OrdinalIgnoreCase)
+                   && !fileName.Contains("GlobalUsings", StringComparison.OrdinalIgnoreCase);
         }
 
         public static string ToFunctionId(IMethodSymbol symbol)

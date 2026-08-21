@@ -1363,6 +1363,7 @@ namespace BankSystem
             {
                 if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath)) continue;
                 var filePath = document.FilePath;
+                if (!IsEligibleSourceFile(filePath)) continue;
                 var fileFunctions = analysis.Functions.Where(function => string.Equals(function.SourceFile, filePath, StringComparison.OrdinalIgnoreCase)).ToList();
                 sourceFiles.Add(new SourceFile
                 {
@@ -1579,7 +1580,13 @@ namespace BankSystem
                                            || part.Equals("tests", StringComparison.OrdinalIgnoreCase)))
                 return false;
 
-            return !IOPath.GetFileName(path).EndsWith("Tests.cs", StringComparison.OrdinalIgnoreCase);
+            var fileName = IOPath.GetFileName(path);
+            return !fileName.EndsWith("Tests.cs", StringComparison.OrdinalIgnoreCase)
+                   && !fileName.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase)
+                   && !fileName.EndsWith(".g.i.cs", StringComparison.OrdinalIgnoreCase)
+                   && !fileName.EndsWith(".designer.cs", StringComparison.OrdinalIgnoreCase)
+                   && !fileName.Contains("AssemblyInfo", StringComparison.OrdinalIgnoreCase)
+                   && !fileName.Contains("GlobalUsings", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool TryValidateProjectSourceSet(IReadOnlyCollection<string> files, out string message)
