@@ -136,6 +136,15 @@ namespace BankSystem
         [ObservableProperty]
         private ObservableCollection<FunctionSelectionViewModel> _functionSelections = new();
 
+        public ObservableCollection<FunctionSelectionViewModel> ModelFunctionSelections { get; } = new();
+        public ObservableCollection<FunctionSelectionViewModel> IdentifiedFunctionSelections { get; } = new();
+
+        [ObservableProperty]
+        private FunctionSelectionViewModel _selectedModelFunction;
+
+        [ObservableProperty]
+        private FunctionSelectionViewModel _selectedIdentifiedFunction;
+
         [ObservableProperty]
         private ObservableCollection<TranslationAssumption> _assumptions = new();
 
@@ -1008,6 +1017,8 @@ namespace BankSystem
         private async Task RefreshSemanticFunctionListAsync()
         {
             FunctionSelections.Clear();
+            ModelFunctionSelections.Clear();
+            IdentifiedFunctionSelections.Clear();
             Assumptions.Clear();
             Domains.Clear();
             GeneratedQueries.Clear();
@@ -1030,19 +1041,23 @@ namespace BankSystem
                 if (string.IsNullOrWhiteSpace(combinedCode)) return;
                 analysis = await _engine.AnalyzeSourceCodeAsync(combinedCode, "Source.cs");
             }
-            var hasMain = analysis.Functions.Any(f => f.Name == "Main");
+            var recommendedEntryPoints = analysis.RecommendDefaultEntryPoints();
 
             foreach (var function in analysis.Functions.OrderBy(f => f.LineNumber))
             {
                 var vm = new FunctionSelectionViewModel(function)
                 {
-                    IsSelected = hasMain ? function.Name == "Main" : true,
+                    IsSelected = recommendedEntryPoints.ContainsKey(function.Id),
+                    EntryPointReason = recommendedEntryPoints.TryGetValue(function.Id, out var reason)
+                        ? reason
+                        : "User-selected entry point",
                     Mode = FunctionModelingMode.ExplicitAutomaton
                 };
                 vm.PropertyChanged += (_, e) =>
                 {
-                    if (e.PropertyName == nameof(FunctionSelectionViewModel.IsSelected))
-                        RefreshSelectedMethods();
+                    if (e.PropertyName == nameof(FunctionSelectionViewModel.IsSelected) ||
+                        e.PropertyName == nameof(FunctionSelectionViewModel.Mode))
+                        RecomputeFunctionScope();
                 };
                 FunctionSelections.Add(vm);
             }
@@ -1061,15 +1076,65 @@ namespace BankSystem
             }
 
             _latestSemanticAnalysis = analysis;
-            RefreshSelectedMethods();
-            StatusMessage = $"Semantic analysis found {FunctionSelections.Count} function(s)" +
+            RecomputeFunctionScope();
+            StatusMessage = $"Semantic analysis found {FunctionSelections.Count} function(s): {ModelFunctionSelections.Count} in the UPPAAL model, {IdentifiedFunctionSelections.Count} identified only" +
                             (IsWorkspaceProject ? " in the selected project" : string.Empty);
+        }
+
+        private void RecomputeFunctionScope()
+        {
+            var analysis = _workspaceAnalysis ?? _latestSemanticAnalysis;
+            var includedIds = new HashSet<string>(StringComparer.Ordinal);
+            var requiredBy = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (analysis != null)
+            {
+                var included = analysis.ResolveClosure(BuildFunctionSelections());
+                includedIds = included.Select(function => function.Id).ToHashSet(StringComparer.Ordinal);
+                var includedById = included.ToDictionary(function => function.Id, StringComparer.Ordinal);
+                foreach (var caller in included)
+                {
+                    foreach (var calleeId in caller.DirectCallIds.Where(includedById.ContainsKey))
+                    {
+                        if (!requiredBy.ContainsKey(calleeId))
+                            requiredBy[calleeId] = caller.DisplayName;
+                    }
+                }
+            }
+
+            ModelFunctionSelections.Clear();
+            IdentifiedFunctionSelections.Clear();
+            foreach (var function in FunctionSelections)
+            {
+                if (includedIds.Contains(function.FunctionId))
+                {
+                    function.Scope = function.IsSelected
+                        ? FunctionScopeState.EntryPoint
+                        : FunctionScopeState.IncludedDependency;
+                    function.InclusionReason = function.IsSelected
+                        ? function.EntryPointReason
+                        : requiredBy.TryGetValue(function.FunctionId, out var caller)
+                            ? $"Required by {caller}"
+                            : "Required dependency";
+                    ModelFunctionSelections.Add(function);
+                }
+                else
+                {
+                    function.Scope = FunctionScopeState.IdentifiedOnly;
+                    function.InclusionReason = "Identified only";
+                    IdentifiedFunctionSelections.Add(function);
+                }
+            }
+
+            if (SelectedModelFunction != null && !ModelFunctionSelections.Contains(SelectedModelFunction))
+                SelectedModelFunction = null;
+            if (SelectedIdentifiedFunction != null && !IdentifiedFunctionSelections.Contains(SelectedIdentifiedFunction))
+                SelectedIdentifiedFunction = null;
+            RefreshSelectedMethods();
         }
 
         private void RefreshSelectedMethods()
         {
-            var selectedNames = FunctionSelections
-                .Where(f => f.IsSelected)
+            var selectedNames = ModelFunctionSelections
                 .Select(f => f.Function.Name)
                 .ToHashSet(StringComparer.Ordinal);
 
@@ -1155,6 +1220,8 @@ namespace BankSystem
 
                     Methods.Clear();
                     FunctionSelections.Clear();
+                    ModelFunctionSelections.Clear();
+                    IdentifiedFunctionSelections.Clear();
                     Assumptions.Clear();
                     Domains.Clear();
                     GeneratedQueries.Clear();
@@ -1441,6 +1508,8 @@ namespace BankSystem
                 Methods.Clear();
                 LoadedSourceFiles.Clear();
                 FunctionSelections.Clear();
+                ModelFunctionSelections.Clear();
+                IdentifiedFunctionSelections.Clear();
                 Assumptions.Clear();
                 Domains.Clear();
                 GeneratedQueries.Clear();
@@ -1632,7 +1701,11 @@ namespace BankSystem
         private void SelectAllFunctions()
         {
             foreach (var f in FunctionSelections)
+            {
+                f.EntryPointReason = "User-selected entry point";
                 f.IsSelected = true;
+            }
+            RecomputeFunctionScope();
         }
 
         [RelayCommand]
@@ -1640,6 +1713,45 @@ namespace BankSystem
         {
             foreach (var f in FunctionSelections)
                 f.IsSelected = false;
+            RecomputeFunctionScope();
+        }
+
+        [RelayCommand]
+        private void AddToUppaalModel()
+        {
+            if (SelectedIdentifiedFunction == null)
+            {
+                MessageBox.Show("Select an identified function first.", "No Function Selected", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var name = SelectedIdentifiedFunction.Name;
+            SelectedIdentifiedFunction.EntryPointReason = "User-selected entry point";
+            SelectedIdentifiedFunction.IsSelected = true;
+            RecomputeFunctionScope();
+            StatusMessage = $"Added {name} as an UPPAAL entry point.";
+        }
+
+        [RelayCommand]
+        private void RemoveFromUppaalModel()
+        {
+            if (SelectedModelFunction == null)
+            {
+                MessageBox.Show("Select a modelled function first.", "No Function Selected", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (!SelectedModelFunction.IsSelected)
+            {
+                MessageBox.Show($"{SelectedModelFunction.Name} is required by another selected function. Remove its entry point or set this function to Stub to keep an explicit abstraction.",
+                    "Required Dependency", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var name = SelectedModelFunction.Name;
+            SelectedModelFunction.IsSelected = false;
+            RecomputeFunctionScope();
+            StatusMessage = $"Removed {name} as an UPPAAL entry point.";
         }
 
         [RelayCommand]
@@ -1706,7 +1818,7 @@ namespace BankSystem
                 var service = new RequirementTranslationService();
                 var context = new RequirementTranslationContext
                 {
-                    Functions = FunctionSelections.Select(f => f.Function).ToList(),
+                Functions = ModelFunctionSelections.Select(f => f.Function).ToList(),
                     Variables = Domains.Select(d => d.Name.Split('.').Last()).Distinct().ToList(),
                     VariableReferences = BuildUppaalVariableReferences()
                 };
@@ -1759,7 +1871,7 @@ namespace BankSystem
 
                 var functionDisplayName = domain.Name[..separator];
                 var variable = domain.Name[(separator + 1)..];
-                var function = FunctionSelections
+                var function = ModelFunctionSelections
                     .Select(selection => selection.Function)
                     .FirstOrDefault(candidate => candidate.DisplayName.Equals(functionDisplayName, StringComparison.Ordinal));
 
@@ -1770,7 +1882,7 @@ namespace BankSystem
             // Requirements can be interpreted before the model has been generated.
             // In that case there are no domain rows yet, so derive valid template-local
             // references from the semantic function bodies.
-            foreach (var function in FunctionSelections.Select(selection => selection.Function))
+            foreach (var function in ModelFunctionSelections.Select(selection => selection.Function))
             {
                 foreach (var variable in CollectFunctionVariableNames(function))
                 {
@@ -1830,6 +1942,13 @@ namespace BankSystem
 
                 if (FunctionSelections.Count == 0)
                     await RefreshSemanticFunctionListAsync();
+
+                if (ModelFunctionSelections.Count == 0)
+                {
+                    MessageBox.Show("Add at least one function to the UPPAAL model before generating.", "No Modelled Functions",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
 
                 var request = new ModelGenerationRequest
                 {
@@ -2325,6 +2444,8 @@ namespace BankSystem
                 LoadedSourceFiles.Clear();
                 HasMultipleFiles = false;
                 FunctionSelections.Clear();
+                ModelFunctionSelections.Clear();
+                IdentifiedFunctionSelections.Clear();
                 Assumptions.Clear();
                 Domains.Clear();
                 GeneratedQueries.Clear();
@@ -2407,10 +2528,26 @@ namespace BankSystem
         [ObservableProperty]
         private FunctionModelingMode _mode = FunctionModelingMode.ExplicitAutomaton;
 
+        [ObservableProperty]
+        private FunctionScopeState _scope = FunctionScopeState.IdentifiedOnly;
+
+        [ObservableProperty]
+        private string _inclusionReason = "Identified only";
+
+        [ObservableProperty]
+        private string _entryPointReason = "User-selected entry point";
+
         public FunctionSelectionViewModel(FunctionDescriptor function)
         {
             Function = function;
         }
+    }
+
+    public enum FunctionScopeState
+    {
+        EntryPoint,
+        IncludedDependency,
+        IdentifiedOnly
     }
 
     public class TreeItemViewModel : ObservableObject

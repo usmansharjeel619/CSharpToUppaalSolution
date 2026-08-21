@@ -265,6 +265,11 @@ namespace CSharpToUppaal.Backend.Services
             if (result.Any(s => s.IsSelected))
                 return result;
 
+            // A non-empty list with no selected roots is an intentional empty model scope
+            // from the Functions tab; do not silently restore Main/all functions.
+            if (result.Count > 0)
+                return result;
+
             var main = functions.FirstOrDefault(f => f.Name == "Main");
             if (main != null)
             {

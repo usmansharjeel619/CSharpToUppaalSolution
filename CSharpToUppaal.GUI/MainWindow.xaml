@@ -189,6 +189,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
@@ -207,35 +208,61 @@
                                 Command="{Binding DeselectAllFunctionsCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 Margin="4,8"/>
+                        <Button Content="Add to UPPAAL Model"
+                                Command="{Binding AddToUppaalModelCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                Margin="12,8,4,8"/>
+                        <Button Content="Remove from UPPAAL Model"
+                                Command="{Binding RemoveFromUppaalModelCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                Margin="4,8"/>
                         <TextBlock Text="{Binding GenerationReportText}"
                                    Foreground="White"
                                    VerticalAlignment="Center"
                                    Margin="12,0"/>
                     </StackPanel>
 
-                    <!-- Checked functions will be used for CFG and UPPAAL model generation -->
-                    <DataGrid Grid.Row="1"
-                              ItemsSource="{Binding FunctionSelections}"
-                              AutoGenerateColumns="False"
-                              CanUserAddRows="False"
-                              GridLinesVisibility="Horizontal"
-                              HeadersVisibility="Column">
-                        <DataGrid.Columns>
-                            <DataGridCheckBoxColumn Header="Include" Binding="{Binding IsSelected, Mode=TwoWay}" Width="70"/>
-                            <DataGridTextColumn Header="Function" Binding="{Binding Name}" Width="220" IsReadOnly="True"/>
-                            <DataGridTextColumn Header="Signature" Binding="{Binding Signature}" Width="280" IsReadOnly="True"/>
-                            <DataGridComboBoxColumn Header="Mode"
-                                                    SelectedItemBinding="{Binding Mode, Mode=TwoWay}"
-                                                    ItemsSource="{Binding Source={StaticResource FunctionModeValues}}"
-                                                    Width="150"/>
-                            <DataGridTextColumn Header="Return" Binding="{Binding ReturnType}" Width="100" IsReadOnly="True"/>
-                            <DataGridTextColumn Header="Parameters" Binding="{Binding Parameters}" Width="220" IsReadOnly="True"/>
-                            <DataGridTextColumn Header="Calls" Binding="{Binding DependencyCount}" Width="70" IsReadOnly="True"/>
-                            <DataGridTextColumn Header="Warnings" Binding="{Binding Warnings}" Width="*" IsReadOnly="True"/>
-                        </DataGrid.Columns>
-                    </DataGrid>
+                    <GroupBox Grid.Row="1" Header="UPPAAL Model Functions  (templates/channels will be created)" Foreground="White" Margin="8,6">
+                        <DataGrid ItemsSource="{Binding ModelFunctionSelections}"
+                                  SelectedItem="{Binding SelectedModelFunction, Mode=TwoWay}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  GridLinesVisibility="Horizontal"
+                                  HeadersVisibility="Column">
+                            <DataGrid.Columns>
+                                <DataGridCheckBoxColumn Header="Entry Point" Binding="{Binding IsSelected, Mode=TwoWay}" Width="80"/>
+                                <DataGridTextColumn Header="Function" Binding="{Binding Name}" Width="220" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Inclusion Reason" Binding="{Binding InclusionReason}" Width="190" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Signature" Binding="{Binding Signature}" Width="260" IsReadOnly="True"/>
+                                <DataGridComboBoxColumn Header="Mode"
+                                                        SelectedItemBinding="{Binding Mode, Mode=TwoWay}"
+                                                        ItemsSource="{Binding Source={StaticResource FunctionModeValues}}"
+                                                        Width="130"/>
+                                <DataGridTextColumn Header="Return" Binding="{Binding ReturnType}" Width="90" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Warnings" Binding="{Binding Warnings}" Width="*" IsReadOnly="True"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </GroupBox>
 
-                    <TextBlock Grid.Row="2"
+                    <GroupBox Grid.Row="2" Header="Identified Functions  (no UPPAAL template/channel will be created)" Foreground="White" Margin="8,6">
+                        <DataGrid ItemsSource="{Binding IdentifiedFunctionSelections}"
+                                  SelectedItem="{Binding SelectedIdentifiedFunction, Mode=TwoWay}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  GridLinesVisibility="Horizontal"
+                                  HeadersVisibility="Column">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Function" Binding="{Binding Name}" Width="240" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Signature" Binding="{Binding Signature}" Width="300" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Return" Binding="{Binding ReturnType}" Width="100" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Parameters" Binding="{Binding Parameters}" Width="230" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Calls" Binding="{Binding DependencyCount}" Width="70" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Warnings" Binding="{Binding Warnings}" Width="*" IsReadOnly="True"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </GroupBox>
+
+                    <TextBlock Grid.Row="3"
                                Text="{Binding SettingsSummary}"
                                Foreground="White"
                                Margin="10,6"/>

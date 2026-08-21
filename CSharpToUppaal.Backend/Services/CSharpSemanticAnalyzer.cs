@@ -50,11 +50,117 @@ namespace CSharpToUppaal.Backend.Services
         public IEnumerable<VariableDeclaratorSyntax> GetVariableDeclarators() =>
             Roots.SelectMany(root => root.DescendantNodes().OfType<VariableDeclaratorSyntax>());
 
+        /// <summary>
+        /// Finds source-level operations suitable for a first UPPAAL scope. Presentation
+        /// handlers are treated as environment triggers, rather than automata: their first
+        /// local non-presentation callees are selected instead. This prevents a button click,
+        /// dialog/input handler, or ViewModel command from becoming a UPPAAL template while
+        /// retaining the business operation it invokes.
+        /// </summary>
+        public IReadOnlyDictionary<string, string> RecommendDefaultEntryPoints()
+        {
+            Dictionary<string, string> SelectWhere(Func<FunctionDescriptor, bool> predicate, string reason) =>
+                Functions.Where(predicate).ToDictionary(function => function.Id, _ => reason, StringComparer.Ordinal);
+
+            var main = SelectWhere(function => function.Name == "Main" && !IsInfrastructure(function), "C# application entry point");
+            if (main.Count > 0) return main;
+
+            var controllerActions = SelectWhere(IsControllerAction, "HTTP/controller operation");
+            if (controllerActions.Count > 0) return controllerActions;
+
+            var operationsReachedFromUi = FindOperationsReachedFromUi();
+            if (operationsReachedFromUi.Count > 0) return operationsReachedFromUi;
+
+            var called = Functions.SelectMany(function => function.DirectCallIds).ToHashSet(StringComparer.Ordinal);
+            var callGraphRoots = SelectWhere(function => !called.Contains(function.Id) && !IsInfrastructure(function) && !IsPresentationBoundary(function), "Top-level application operation");
+            if (callGraphRoots.Count > 0) return callGraphRoots;
+
+            return SelectWhere(function => !IsPresentationBoundary(function), "Fallback: no application entry point could be inferred");
+        }
+
+        private IReadOnlyDictionary<string, string> FindOperationsReachedFromUi()
+        {
+            var byId = Functions.ToDictionary(function => function.Id, StringComparer.Ordinal);
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            var pending = new Queue<string>(Functions.Where(IsPresentationBoundary).Select(function => function.Id));
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+
+            while (pending.Count > 0)
+            {
+                var currentId = pending.Dequeue();
+                if (!visited.Add(currentId) || !byId.TryGetValue(currentId, out var current)) continue;
+                foreach (var callId in current.DirectCallIds)
+                {
+                    if (!byId.TryGetValue(callId, out var callee) || IsInfrastructure(callee)) continue;
+                    if (IsPresentationBoundary(callee))
+                    {
+                        pending.Enqueue(callId);
+                        continue;
+                    }
+
+                    result.TryAdd(callId, "Business operation reached from UI");
+                }
+            }
+
+            return result;
+        }
+
+        private bool IsCommandMethod(FunctionDescriptor function) =>
+            MethodDeclarationsById.TryGetValue(function.Id, out var declaration) &&
+            declaration.AttributeLists.SelectMany(list => list.Attributes)
+                .Any(attribute => attribute.Name.ToString().EndsWith("RelayCommand", StringComparison.OrdinalIgnoreCase)
+                                  || attribute.Name.ToString().EndsWith("Command", StringComparison.OrdinalIgnoreCase));
+
+        private bool IsControllerAction(FunctionDescriptor function) =>
+            MethodDeclarationsById.TryGetValue(function.Id, out var declaration) &&
+            (function.ContainingType.EndsWith("Controller", StringComparison.OrdinalIgnoreCase) ||
+             declaration.AttributeLists.SelectMany(list => list.Attributes)
+                 .Any(attribute => attribute.Name.ToString().StartsWith("Http", StringComparison.OrdinalIgnoreCase)));
+
+        private bool IsUiEventHandler(FunctionDescriptor function)
+        {
+            if (!MethodDeclarationsById.TryGetValue(function.Id, out var declaration)) return false;
+            var isViewCode = function.SourceFile.Contains("\\Views\\", StringComparison.OrdinalIgnoreCase)
+                             || function.SourceFile.Contains("/Views/", StringComparison.OrdinalIgnoreCase);
+            return isViewCode && declaration.ParameterList.Parameters.Count == 2 &&
+                   declaration.ParameterList.Parameters[1].Type?.ToString().EndsWith("EventArgs", StringComparison.OrdinalIgnoreCase) == true;
+        }
+
+        private bool IsPresentationBoundary(FunctionDescriptor function)
+        {
+            var isPresentationType = function.ContainingType.EndsWith("ViewModel", StringComparison.OrdinalIgnoreCase)
+                                     || function.ContainingType.EndsWith("View", StringComparison.OrdinalIgnoreCase)
+                                     || function.ContainingType.EndsWith("Window", StringComparison.OrdinalIgnoreCase)
+                                     || function.ContainingType.EndsWith("Page", StringComparison.OrdinalIgnoreCase)
+                                     || function.ContainingType.EndsWith("Control", StringComparison.OrdinalIgnoreCase);
+            var source = function.SourceFile.Replace('/', '\\');
+            return IsCommandMethod(function)
+                   || IsUiEventHandler(function)
+                   || isPresentationType
+                   || source.Contains("\\Views\\", StringComparison.OrdinalIgnoreCase)
+                   || source.Contains("\\ViewModels\\", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsInfrastructure(FunctionDescriptor function)
+        {
+            var source = function.SourceFile.Replace('/', '\\');
+            return function.Name is "ConfigureServices" or "OnStartup" or "OnConfiguring" or "InitializeComponent"
+                   || function.ContainingType.EndsWith("DbContext", StringComparison.OrdinalIgnoreCase)
+                   || function.ContainingType is "App" or "Program"
+                   || source.Contains("\\Migrations\\", StringComparison.OrdinalIgnoreCase)
+                   || source.Contains("\\Views\\", StringComparison.OrdinalIgnoreCase);
+        }
+
         public IReadOnlyList<FunctionDescriptor> ResolveClosure(IEnumerable<FunctionSelection> selections)
         {
             var functionById = Functions.ToDictionary(f => f.Id);
-            var selected = selections.Where(s => s.IsSelected).ToList();
-            if (selected.Count == 0 && Functions.Count > 0)
+            var allSelections = selections.ToList();
+            var selectionById = allSelections
+                .Where(selection => !string.IsNullOrWhiteSpace(selection.FunctionId))
+                .GroupBy(selection => selection.FunctionId, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+            var selected = allSelections.Where(s => s.IsSelected).ToList();
+            if (selected.Count == 0 && allSelections.Count == 0 && Functions.Count > 0)
             {
                 var main = Functions.FirstOrDefault(f => f.Name == "Main");
                 selected.Add(new FunctionSelection { FunctionId = main?.Id ?? Functions[0].Id, IsSelected = true, Mode = FunctionModelingMode.ExplicitAutomaton });
@@ -67,7 +173,7 @@ namespace CSharpToUppaal.Backend.Services
                 var id = stack.Pop();
                 if (!functionById.TryGetValue(id, out var function) || included.ContainsKey(id)) continue;
                 included[id] = function;
-                if (selected.FirstOrDefault(s => s.FunctionId == id)?.Mode == FunctionModelingMode.Stub) continue;
+                if (selectionById.TryGetValue(id, out var selection) && selection.Mode == FunctionModelingMode.Stub) continue;
                 foreach (var callId in function.DirectCallIds)
                     if (!included.ContainsKey(callId)) stack.Push(callId);
             }
@@ -230,13 +336,44 @@ namespace CSharpToUppaal.Backend.Services
                     var method = info.Symbol as IMethodSymbol ?? info.CandidateSymbols.OfType<IMethodSymbol>().FirstOrDefault();
                     if (method == null) { AddUnresolved(caller, invocation.Expression.ToString()); continue; }
                     var callId = ToFunctionId(method);
-                    if (knownIds.Contains(callId))
+                    if (method.ContainingType?.TypeKind == TypeKind.Interface)
+                    {
+                        if (TryResolveLocalInterfaceImplementation(result, method, out var implementationId))
+                        {
+                            if (!caller.DirectCallIds.Contains(implementationId, StringComparer.Ordinal)) caller.DirectCallIds.Add(implementationId);
+                        }
+                        else
+                        {
+                            AddUnresolved(caller, method.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat));
+                        }
+                    }
+                    else if (knownIds.Contains(callId))
                     {
                         if (!caller.DirectCallIds.Contains(callId, StringComparer.Ordinal)) caller.DirectCallIds.Add(callId);
                     }
                     else if (!IsIgnoredFrameworkCall(method)) AddUnresolved(caller, method.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat));
                 }
             }
+        }
+
+        private static bool TryResolveLocalInterfaceImplementation(CSharpSemanticAnalysisResult result, IMethodSymbol calledMethod, out string implementationId)
+        {
+            implementationId = string.Empty;
+            if (calledMethod.ContainingType?.TypeKind != TypeKind.Interface) return false;
+
+            var candidates = result.MethodSymbolsById
+                .Where(candidate =>
+                {
+                    var implemented = candidate.Value.ContainingType?.FindImplementationForInterfaceMember(calledMethod);
+                    return implemented != null && SymbolEqualityComparer.Default.Equals(implemented.OriginalDefinition, candidate.Value.OriginalDefinition);
+                })
+                .ToList();
+            if (candidates.Count == 1)
+            {
+                implementationId = candidates[0].Key;
+                return true;
+            }
+            return false;
         }
 
         private static bool IsIgnoredFrameworkCall(IMethodSymbol symbol)

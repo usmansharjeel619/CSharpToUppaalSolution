@@ -85,6 +85,88 @@ public class SemanticPipelineTests
     }
 
     [Fact]
+    public async Task FunctionScopeClosureIncludesReachableFunctionsAndLeavesUnrelatedFunctionsOut()
+    {
+        const string code = """
+            public class ScopeCase
+            {
+                public static void Main() => A();
+                public static void A() => B();
+                public static void B() { }
+                public static void C() { }
+            }
+            """;
+        var analysis = await new CSharpSemanticAnalyzer().AnalyzeSourceCodeAsync(code);
+        var main = Assert.Single(analysis.Functions, function => function.Name == "Main");
+        var selections = analysis.Functions.Select(function => new FunctionSelection
+        {
+            FunctionId = function.Id,
+            IsSelected = function.Id == main.Id,
+            Mode = FunctionModelingMode.ExplicitAutomaton
+        }).ToList();
+
+        var closure = analysis.ResolveClosure(selections);
+        Assert.Equal(["A", "B", "Main"], closure.Select(function => function.Name).OrderBy(name => name));
+        Assert.DoesNotContain(closure, function => function.Name == "C");
+
+        selections[0].IsSelected = false;
+        Assert.Empty(analysis.ResolveClosure(selections));
+    }
+
+    [Fact]
+    public async Task IntelligentScopeSkipsThinUiCommandsAndFollowsLocalInterfaceImplementations()
+    {
+        const string code = """
+            public class RelayCommandAttribute : System.Attribute { }
+            public interface IStore { void Save(); }
+            public class Store : IStore { public void Save() { } }
+            public class ScreenViewModel
+            {
+                [RelayCommand]
+                private void CheckIn(IStore store) { store.Save(); }
+                private void Helper() { }
+            }
+            """;
+        var analysis = await new CSharpSemanticAnalyzer().AnalyzeSourceCodeAsync(code);
+        var recommended = analysis.RecommendDefaultEntryPoints();
+        var command = Assert.Single(analysis.Functions, function => function.Name == "CheckIn");
+        var save = Assert.Single(analysis.Functions, function => function.Name == "Save" && function.ContainingType == "Store");
+
+        Assert.DoesNotContain(recommended.Keys, id => id == command.Id);
+        Assert.Equal("Business operation reached from UI", recommended[save.Id]);
+
+        var selections = analysis.Functions.Select(function => new FunctionSelection
+        {
+            FunctionId = function.Id,
+            IsSelected = recommended.ContainsKey(function.Id),
+            Mode = FunctionModelingMode.ExplicitAutomaton
+        });
+        var closure = analysis.ResolveClosure(selections);
+        Assert.Contains(closure, function => function.Id == save.Id);
+        Assert.DoesNotContain(closure, function => function.Name == "Helper");
+    }
+
+    [Fact]
+    public async Task IntelligentScopeDoesNotSelectGuiInputOrButtonHandlersWithoutLocalBusinessCalls()
+    {
+        const string code = """
+            using System;
+            public class CheckoutViewModel
+            {
+                [RelayCommand]
+                private void OpenCheckout() { }
+                private void AmountChanged(object sender, EventArgs args) { }
+            }
+            public class RelayCommandAttribute : Attribute { }
+            """;
+
+        var analysis = await new CSharpSemanticAnalyzer().AnalyzeSourceCodeAsync(code, "ViewModels/CheckoutViewModel.cs");
+        var recommended = analysis.RecommendDefaultEntryPoints();
+
+        Assert.Empty(recommended);
+    }
+
+    [Fact]
     public async Task GeneratorSupportsNoMainRootSelectionAndQueries()
     {
         const string code = """
