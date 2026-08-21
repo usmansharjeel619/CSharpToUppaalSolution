@@ -8,6 +8,7 @@ using CSharpToUppaal.Backend.Models;
 using CSharpToUppaal.Backend.Parsers;
 using CSharpToUppaal.Backend.Services;
 using CSharpToUppaal.Backend.Verification;
+using RoslynProject = Microsoft.CodeAnalysis.Project;
 
 #nullable disable
 namespace CSharpToUppaal.Backend
@@ -18,8 +19,10 @@ namespace CSharpToUppaal.Backend
         Task<SourceFile> AddSourceFileAsync(Project project, string filePath);
         Task<SourceFile> AddSourceCodeAsync(Project project, string code, string fileName = "Source.cs");
         Task<CSharpSemanticAnalysisResult> AnalyzeSourceCodeAsync(string code, string fileName = "Source.cs");
+        Task<CSharpSemanticAnalysisResult> AnalyzeProjectAsync(RoslynProject project);
         Task<UppaalModel> GenerateModelAsync(Project project, string modelName = null);
         Task<UppaalModel> GenerateModelAsync(ModelGenerationRequest request);
+        Task<UppaalModel> GenerateModelAsync(CSharpSemanticAnalysisResult analysis, ModelGenerationRequest request);
         Task<VerificationSummary> VerifyModelAsync(UppaalModel model);
         Task<List<ControlFlowGraph>> GenerateCfgsAsync(Project project);
         Task<ControlFlowGraph> GenerateCfgForMethodAsync(MethodInfo method);
@@ -150,6 +153,11 @@ namespace CSharpToUppaal.Backend
             return _semanticAnalyzer.AnalyzeSourceCodeAsync(code, fileName);
         }
 
+        public Task<CSharpSemanticAnalysisResult> AnalyzeProjectAsync(RoslynProject project)
+        {
+            return _semanticAnalyzer.AnalyzeProjectAsync(project);
+        }
+
         public async Task<UppaalModel> GenerateModelAsync(Project project, string modelName = null)
         {
             try
@@ -186,6 +194,13 @@ namespace CSharpToUppaal.Backend
                 Console.WriteLine($"Error generating UPPAAL model from request: {ex.Message}");
                 throw;
             }
+        }
+
+        public async Task<UppaalModel> GenerateModelAsync(CSharpSemanticAnalysisResult analysis, ModelGenerationRequest request)
+        {
+            var model = await _uppaalGenerator.GenerateModelFromAnalysisAsync(analysis, request);
+            model.Name = request.ProjectName;
+            return model;
         }
 
         public async Task<VerificationSummary> VerifyModelAsync(UppaalModel model)

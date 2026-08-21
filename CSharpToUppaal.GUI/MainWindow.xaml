@@ -126,6 +126,14 @@
                                 Command="{Binding OpenFolderCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 Margin="4"/>
+                        <Button Content="Open Solution"
+                                Command="{Binding OpenSolutionCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                Margin="4"/>
+                        <Button Content="Open Project"
+                                Command="{Binding OpenProjectCommand}"
+                                Style="{StaticResource WhiteButtonStyle}"
+                                Margin="4"/>
                         <Button Content="Parse"
                                 Command="{Binding ParseCodeCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
@@ -160,10 +168,16 @@
                                 </MultiBinding>
                             </TextBlock.Text>
                         </TextBlock>
+                        <TextBlock Text="Project-aware mode: sources are read-only here; save externally and reopen to reload."
+                                   Foreground="#F5C542"
+                                   VerticalAlignment="Center"
+                                   Margin="14,4"
+                                   Visibility="{Binding IsWorkspaceProject, Converter={StaticResource BoolToVis}}"/>
                     </StackPanel>
 
                     <controls:CodeEditor Grid.Row="2"
-                                       Text="{Binding SourceCode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                       Text="{Binding SourceCode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                       IsReadOnly="{Binding IsWorkspaceProject}"/>
                 </Grid>
             </TabItem>
 
@@ -324,11 +338,15 @@
             <TabItem Header="Model Info">
                 <Grid Background="{StaticResource BackgroundBrush}">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <GroupBox Grid.Row="0" Header="Translation Warnings" Foreground="White" Margin="8">
+                    <TextBlock Grid.Row="0" Text="{Binding WorkspaceDetails}" TextWrapping="Wrap"
+                               Foreground="{StaticResource TextPrimaryBrush}" Margin="12,8"/>
+
+                    <GroupBox Grid.Row="1" Header="Translation Warnings" Foreground="White" Margin="8">
                         <DataGrid ItemsSource="{Binding Assumptions}"
                                   AutoGenerateColumns="False"
                                   CanUserAddRows="False"
@@ -344,7 +362,7 @@
                         </DataGrid>
                     </GroupBox>
 
-                    <GroupBox Grid.Row="1" Header="Variable Domains  (edit Min / Max then re-generate to apply)" Foreground="White" Margin="8">
+                    <GroupBox Grid.Row="2" Header="Variable Domains  (edit Min / Max then re-generate to apply)" Foreground="White" Margin="8">
                         <DataGrid ItemsSource="{Binding Domains}"
                                   AutoGenerateColumns="False"
                                   CanUserAddRows="False"

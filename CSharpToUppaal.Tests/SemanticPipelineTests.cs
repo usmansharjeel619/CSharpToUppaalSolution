@@ -115,7 +115,8 @@ public class SemanticPipelineTests
                     IsSelected = true,
                     Mode = FunctionModelingMode.ExplicitAutomaton
                 }
-            }
+            },
+            ExternalStubAssumptionsConfirmed = true
         });
 
         Assert.Equal(ModelGenerationStatus.Success, model.Status);
@@ -158,7 +159,8 @@ public class SemanticPipelineTests
                     IsSelected = true,
                     Mode = FunctionModelingMode.ExplicitAutomaton
                 }
-            }
+            },
+            ExternalStubAssumptionsConfirmed = true
         });
 
         Assert.Contains("select", model.XmlContent);

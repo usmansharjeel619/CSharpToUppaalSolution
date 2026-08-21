@@ -26,10 +26,18 @@ namespace CSharpToUppaal.GUI.ViewModels
     public partial class MainViewModel : ObservableObject
     {
         private readonly CSharpToUppaal.Backend.CSharpToUppaalEngine _engine;
+        private readonly IMsBuildWorkspaceLoader _workspaceLoader = new MsBuildWorkspaceLoader();
         private GuiAppSettings _settings;
         private CSharpToUppaal.Backend.Models.Project _project;
+        private WorkspaceLoadContext _workspaceContext;
+        private CSharpSemanticAnalysisResult _workspaceAnalysis;
+        private CSharpSemanticAnalysisResult _latestSemanticAnalysis;
         private Canvas _cfgCanvas;
         private Canvas _uppaalCanvas;
+        private const int MaximumProjectSourceFiles = 1000;
+        private const long MaximumProjectSourceBytes = 50L * 1024 * 1024;
+        private const int DeferredSemanticAnalysisFileCount = 250;
+        private const int FileLoadYieldInterval = 20;
         private static readonly Regex LocalVariableDeclarationPattern = new(
             @"\b(?:bool|byte|sbyte|short|ushort|int|uint|long|ulong|float|double|decimal|char|string|var)\s+([A-Za-z_][A-Za-z0-9_]*)",
             RegexOptions.Compiled);
@@ -43,6 +51,12 @@ namespace CSharpToUppaal.GUI.ViewModels
 
         [ObservableProperty]
         private string _currentProjectName = "No project loaded";
+
+        [ObservableProperty]
+        private bool _isWorkspaceProject;
+
+        [ObservableProperty]
+        private string _workspaceDetails = "Standalone source mode: pasted code, individual files, and folders are analysed without project references.";
 
         [ObservableProperty]
         private string _sourceCode = @"using System;
@@ -174,7 +188,12 @@ namespace BankSystem
             set
             {
                 if (SetProperty(ref _selectedLoadedFile, value) && value != null)
-                    SourceCode = value.Content;
+                {
+                    if (IsWorkspaceProject && string.IsNullOrEmpty(value.Content))
+                        _ = LoadWorkspaceSourceFileAsync(value);
+                    else
+                        SourceCode = value.Content;
+                }
             }
         }
 
@@ -996,14 +1015,21 @@ namespace BankSystem
             ReadinessStatus = "Not checked";
             GenerationReportText = "";
 
-            var combinedCode = LoadedSourceFiles.Count > 0
-                ? string.Join("\n\n", LoadedSourceFiles.Select(f => f.Content))
-                : SourceCode;
-
-            if (string.IsNullOrWhiteSpace(combinedCode))
-                return;
-
-            var analysis = await _engine.AnalyzeSourceCodeAsync(combinedCode, "Source.cs");
+            CSharpSemanticAnalysisResult analysis;
+            if (IsWorkspaceProject && _workspaceAnalysis != null)
+            {
+                // Workspace projects are deliberately analysed from saved disk contents.
+                // Never concatenate editor text here: it discards project and NuGet references.
+                analysis = _workspaceAnalysis;
+            }
+            else
+            {
+                var combinedCode = LoadedSourceFiles.Count > 0
+                    ? string.Join("\n\n", LoadedSourceFiles.Select(f => f.Content))
+                    : SourceCode;
+                if (string.IsNullOrWhiteSpace(combinedCode)) return;
+                analysis = await _engine.AnalyzeSourceCodeAsync(combinedCode, "Source.cs");
+            }
             var hasMain = analysis.Functions.Any(f => f.Name == "Main");
 
             foreach (var function in analysis.Functions.OrderBy(f => f.LineNumber))
@@ -1034,8 +1060,10 @@ namespace BankSystem
                 });
             }
 
+            _latestSemanticAnalysis = analysis;
             RefreshSelectedMethods();
-            StatusMessage = $"Semantic analysis found {FunctionSelections.Count} function(s)";
+            StatusMessage = $"Semantic analysis found {FunctionSelections.Count} function(s)" +
+                            (IsWorkspaceProject ? " in the selected project" : string.Empty);
         }
 
         private void RefreshSelectedMethods()
@@ -1122,6 +1150,7 @@ namespace BankSystem
                     StatusMessage = "Creating new project...";
 
                     _project = await _engine.CreateProjectAsync(dialog.Result);
+                    DisposeWorkspaceContext();
                     CurrentProjectName = _project.Name;
 
                     Methods.Clear();
@@ -1165,27 +1194,224 @@ namespace BankSystem
         }
 
         [RelayCommand]
+        private async Task OpenSolution()
+        {
+            var dialog = new OpenFileDialog
+            {
+                Filter = "Visual Studio Solutions (*.sln)|*.sln",
+                Title = "Open Solution for Project-Aware Analysis",
+                Multiselect = false
+            };
+            if (dialog.ShowDialog() == true)
+                await OpenWorkspaceAsync(dialog.FileName, isSolution: true);
+        }
+
+        [RelayCommand]
+        private async Task OpenProject()
+        {
+            var dialog = new OpenFileDialog
+            {
+                Filter = "C# Projects (*.csproj)|*.csproj",
+                Title = "Open C# Project for Project-Aware Analysis",
+                Multiselect = false
+            };
+            if (dialog.ShowDialog() == true)
+                await OpenWorkspaceAsync(dialog.FileName, isSolution: false);
+        }
+
+        private async Task OpenWorkspaceAsync(string path, bool isSolution)
+        {
+            WorkspaceLoadContext context = null;
+            try
+            {
+                IsBusy = true;
+                var selectedProjectPath = path;
+                if (isSolution)
+                {
+                    // Parsing a .sln is nearly instant. Do this before MSBuild so an
+                    // unrelated large project cannot delay the target-project chooser.
+                    StatusMessage = "Reading solution project list...";
+                    var discovery = await _workspaceLoader.DiscoverSolutionAsync(path);
+                    var chooser = new ProjectSelectionWindow(discovery.Projects) { Owner = Application.Current.MainWindow };
+                    if (chooser.ShowDialog() != true) return;
+                    selectedProjectPath = chooser.SelectedProject.FilePath;
+                }
+
+                // Open only the user-selected project and its references. Opening the
+                // entire solution was the primary cause of multi-minute waits.
+                StatusMessage = $"Loading selected project with MSBuild...";
+                context = await _workspaceLoader.LoadProjectAsync(selectedProjectPath);
+
+                if (context.RequiresRestore)
+                {
+                    var answer = MessageBox.Show(
+                        "Restore assets were not found for one or more projects. Run 'dotnet restore' now?\n\n" +
+                        "No existing model will be changed if restore fails.",
+                        "Restore Required", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                    if (answer == MessageBoxResult.Yes)
+                    {
+                        context.Dispose();
+                        context = null;
+                        StatusMessage = "Restoring NuGet and project assets...";
+                        var restore = await _workspaceLoader.RestoreAsync(selectedProjectPath);
+                        if (!restore.Succeeded)
+                        {
+                            StatusMessage = $"Restore failed (exit code {restore.ExitCode}).";
+                            MessageBox.Show($"dotnet restore failed (exit code {restore.ExitCode}).\n\n{TrimDiagnostic(restore.Output)}",
+                                "Restore Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                            return;
+                        }
+                        StatusMessage = "Restore completed. Reloading project...";
+                        context = await _workspaceLoader.LoadProjectAsync(selectedProjectPath);
+                    }
+                }
+
+                var selected = context.Projects.FirstOrDefault(project =>
+                    string.Equals(project.FilePath, selectedProjectPath, StringComparison.OrdinalIgnoreCase))
+                    ?? throw new InvalidOperationException("The selected project could not be loaded by MSBuild.");
+
+                StatusMessage = $"Analysing saved sources for {selected.Name}...";
+                var analysis = await _engine.AnalyzeProjectAsync(selected.RoslynProject);
+                await ApplyWorkspaceProjectAsync(context, selected, analysis);
+                context = null; // ownership moved to the view model
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Could not load project: {ex.Message}";
+                MessageBox.Show($"Could not load the selected {(isSolution ? "solution" : "project")}:\n{ex.Message}",
+                    "Project Load Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                context?.Dispose();
+                IsBusy = false;
+            }
+        }
+
+        private async Task ApplyWorkspaceProjectAsync(WorkspaceLoadContext context, WorkspaceProjectDescriptor selected, CSharpSemanticAnalysisResult analysis)
+        {
+            var project = await _engine.CreateProjectAsync(selected.Name);
+            var sourceFiles = new List<SourceFile>();
+            foreach (var document in selected.RoslynProject.Documents)
+            {
+                if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath)) continue;
+                var filePath = document.FilePath;
+                var fileFunctions = analysis.Functions.Where(function => string.Equals(function.SourceFile, filePath, StringComparison.OrdinalIgnoreCase)).ToList();
+                sourceFiles.Add(new SourceFile
+                {
+                    FilePath = filePath,
+                    // The semantic analysis already has the Roslyn document. Do not read
+                    // every file again just to populate the editor; load it on selection.
+                    Content = string.Empty,
+                    Language = "C#",
+                    Methods = fileFunctions.Select(ToMethodInfo).ToList()
+                });
+            }
+            if (sourceFiles.Count == 0) throw new InvalidOperationException("The selected project did not provide readable C# source files.");
+
+            DisposeWorkspaceContext();
+            _workspaceContext = context;
+            _workspaceAnalysis = analysis;
+            IsWorkspaceProject = true;
+            _project = project;
+            _project.SourceFiles.AddRange(sourceFiles);
+            CurrentProjectName = selected.Name;
+            WorkspaceDetails = BuildWorkspaceDetails(context, selected, analysis);
+
+            Methods.Clear();
+            LoadedSourceFiles.Clear();
+            foreach (var sourceFile in sourceFiles)
+            {
+                LoadedSourceFiles.Add(sourceFile);
+                foreach (var method in sourceFile.Methods) Methods.Add(method);
+            }
+            SelectedLoadedFile = LoadedSourceFiles.FirstOrDefault();
+            HasMultipleFiles = LoadedSourceFiles.Count > 1;
+            if (Methods.Any()) SelectedMethod = Methods.First();
+            UpdateProjectTree();
+            await RefreshSemanticFunctionListAsync();
+            StatusMessage = $"Loaded project '{selected.Name}' ({sourceFiles.Count} source file(s), {FunctionSelections.Count} function(s)).";
+        }
+
+        private static MethodInfo ToMethodInfo(FunctionDescriptor function) => new()
+        {
+            Name = function.Name,
+            ReturnType = function.ReturnType,
+            IsPublic = function.IsPublic,
+            IsStatic = function.IsStatic,
+            IsAsync = function.IsAsync,
+            Body = function.Body,
+            LineNumber = function.LineNumber,
+            Parameters = function.Parameters.ToList(),
+            LinesOfCode = Math.Max(1, function.Body.Count(character => character == '\n') + 1)
+        };
+
+        private async Task LoadWorkspaceSourceFileAsync(SourceFile sourceFile)
+        {
+            try
+            {
+                StatusMessage = $"Opening {IOPath.GetFileName(sourceFile.FilePath)}...";
+                var content = await File.ReadAllTextAsync(sourceFile.FilePath);
+                sourceFile.Content = content;
+                if (ReferenceEquals(SelectedLoadedFile, sourceFile))
+                    SourceCode = content;
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Could not open {IOPath.GetFileName(sourceFile.FilePath)}: {ex.Message}";
+            }
+        }
+
+        private static string BuildWorkspaceDetails(WorkspaceLoadContext context, WorkspaceProjectDescriptor selected, CSharpSemanticAnalysisResult analysis)
+        {
+            var diagnostics = context.LoadDiagnostics.Count == 0
+                ? "No MSBuild workspace load diagnostics."
+                : string.Join(Environment.NewLine, context.LoadDiagnostics.Select(diagnostic => $"- {diagnostic}"));
+            var framework = string.IsNullOrWhiteSpace(analysis.TargetFramework) ? selected.TargetFramework : analysis.TargetFramework;
+            return $"Project-aware mode | Target: {selected.Name} | Framework: {framework} | Configuration: {context.Configuration} | Platform: {context.Platform}" +
+                   Environment.NewLine + $"Source: {selected.FilePath}" + Environment.NewLine + diagnostics;
+        }
+
+        private static string TrimDiagnostic(string text) => text.Length <= 4000 ? text : text[..4000] + Environment.NewLine + "(output truncated)";
+
+        private void DisposeWorkspaceContext()
+        {
+            _workspaceContext?.Dispose();
+            _workspaceContext = null;
+            _workspaceAnalysis = null;
+            _latestSemanticAnalysis = null;
+            IsWorkspaceProject = false;
+            WorkspaceDetails = "Standalone source mode: pasted code, individual files, and folders are analysed without project references.";
+        }
+
+        [RelayCommand]
         private async Task OpenFolder()
         {
-            var dlg = new OpenFolderDialog { Title = "Select Project Folder" };
-            if (dlg.ShowDialog() != true) return;
-
-            var files = Directory.GetFiles(dlg.FolderName, "*.cs", SearchOption.AllDirectories)
-                .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\")
-                         && !f.Contains("\\test\\", StringComparison.OrdinalIgnoreCase)
-                         && !f.Contains("\\tests\\", StringComparison.OrdinalIgnoreCase)
-                         && !IOPath.GetFileName(f).EndsWith("Tests.cs", StringComparison.OrdinalIgnoreCase))
-                .OrderBy(f => f)
-                .ToArray();
-
-            if (files.Length == 0)
+            try
             {
-                MessageBox.Show("No C# source files found in the selected folder.", "No Files Found",
-                    MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
+                var dlg = new OpenFolderDialog { Title = "Select Project Folder" };
+                if (dlg.ShowDialog() != true) return;
 
-            await LoadFilesAsync(files);
+                var files = Directory.EnumerateFiles(dlg.FolderName, "*.cs", SearchOption.AllDirectories)
+                    .Where(IsEligibleSourceFile)
+                    .OrderBy(f => f)
+                    .ToArray();
+
+                if (files.Length == 0)
+                {
+                    MessageBox.Show("No C# source files found in the selected folder.", "No Files Found",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                await LoadFilesAsync(files);
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Could not enumerate source files: {ex.Message}";
+                MessageBox.Show($"Could not enumerate source files in the selected folder:\n{ex.Message}",
+                    "Folder Load Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private async Task LoadFilesAsync(IEnumerable<string> paths)
@@ -1193,20 +1419,32 @@ namespace BankSystem
             try
             {
                 IsBusy = true;
-                var fileList = paths.ToArray();
+                DisposeWorkspaceContext();
+                var fileList = paths.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                if (!TryValidateProjectSourceSet(fileList, out var limitMessage))
+                {
+                    StatusMessage = limitMessage;
+                    MessageBox.Show(limitMessage, "Project Too Large", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
                 StatusMessage = $"Loading {fileList.Length} file(s)...";
 
-                if (_project == null)
-                {
-                    var projectName = fileList.Length == 1
-                        ? IOPath.GetFileNameWithoutExtension(fileList[0])
-                        : IOPath.GetFileName(IOPath.GetDirectoryName(fileList[0])) ?? "Project";
-                    _project = await _engine.CreateProjectAsync(projectName);
-                    CurrentProjectName = _project.Name;
-                }
+                // A new selection replaces the previous project. Keeping the old
+                // SourceFiles list would retain all old file contents in memory.
+                var projectName = fileList.Length == 1
+                    ? IOPath.GetFileNameWithoutExtension(fileList[0])
+                    : IOPath.GetFileName(IOPath.GetDirectoryName(fileList[0])) ?? "Project";
+                _project = await _engine.CreateProjectAsync(projectName);
+                CurrentProjectName = _project.Name;
 
                 Methods.Clear();
                 LoadedSourceFiles.Clear();
+                FunctionSelections.Clear();
+                Assumptions.Clear();
+                Domains.Clear();
+                GeneratedQueries.Clear();
+                CompatibilityIssues.Clear();
 
                 for (int i = 0; i < fileList.Length; i++)
                 {
@@ -1215,6 +1453,10 @@ namespace BankSystem
                     LoadedSourceFiles.Add(sourceFile);
                     foreach (var method in sourceFile.Methods)
                         Methods.Add(method);
+
+                    // Keep the WPF dispatcher responsive during large imports.
+                    if ((i + 1) % FileLoadYieldInterval == 0)
+                        await Task.Yield();
                 }
 
                 SelectedLoadedFile = LoadedSourceFiles.FirstOrDefault();
@@ -1223,11 +1465,25 @@ namespace BankSystem
                 if (Methods.Any())
                     SelectedMethod = Methods.First();
 
-                await RefreshSemanticFunctionListAsync();
                 UpdateProjectTree();
 
                 int totalMethods = LoadedSourceFiles.Sum(f => f.Methods.Count);
-                StatusMessage = $"Loaded {fileList.Length} file(s) with {totalMethods} method(s)";
+                if (fileList.Length > DeferredSemanticAnalysisFileCount)
+                {
+                    StatusMessage = $"Loaded {fileList.Length} file(s) with {totalMethods} method(s). " +
+                                    "Select a relevant file, then use Parse to analyze a focused UPPAAL model scope.";
+                    MessageBox.Show(
+                        $"Loaded {fileList.Length} C# files safely. Semantic analysis is deferred for projects larger than " +
+                        $"{DeferredSemanticAnalysisFileCount} files because converting an entire large application into one " +
+                        "UPPAAL model can exhaust memory or cause state-space explosion.\n\n" +
+                        "Choose a relevant source file in the Viewing list, then select Parse to create the model scope.",
+                        "Large Project Loaded", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    await RefreshSemanticFunctionListAsync();
+                    StatusMessage = $"Loaded {fileList.Length} file(s) with {totalMethods} method(s)";
+                }
             }
             catch (Exception ex)
             {
@@ -1241,6 +1497,48 @@ namespace BankSystem
             }
         }
 
+        private static bool IsEligibleSourceFile(string path)
+        {
+            var directoryParts = IOPath.GetDirectoryName(path)?
+                .Split(IOPath.DirectorySeparatorChar, IOPath.AltDirectorySeparatorChar) ?? Array.Empty<string>();
+
+            if (directoryParts.Any(part => part.Equals("bin", StringComparison.OrdinalIgnoreCase)
+                                           || part.Equals("obj", StringComparison.OrdinalIgnoreCase)
+                                           || part.Equals(".git", StringComparison.OrdinalIgnoreCase)
+                                           || part.Equals(".vs", StringComparison.OrdinalIgnoreCase)
+                                           || part.Equals("test", StringComparison.OrdinalIgnoreCase)
+                                           || part.Equals("tests", StringComparison.OrdinalIgnoreCase)))
+                return false;
+
+            return !IOPath.GetFileName(path).EndsWith("Tests.cs", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryValidateProjectSourceSet(IReadOnlyCollection<string> files, out string message)
+        {
+            if (files.Count > MaximumProjectSourceFiles)
+            {
+                message = $"This import contains {files.Count} C# files. For a responsive and reliable conversion, " +
+                          $"the application supports up to {MaximumProjectSourceFiles} source files per project load. " +
+                          "Choose a smaller production-source folder or use Load File(s) to select the model scope.";
+                return false;
+            }
+
+            long totalBytes = 0;
+            foreach (var file in files)
+            {
+                totalBytes += new FileInfo(file).Length;
+                if (totalBytes > MaximumProjectSourceBytes)
+                {
+                    message = $"The selected source files exceed the {MaximumProjectSourceBytes / (1024 * 1024)} MB project-load limit. " +
+                              "Choose a smaller model scope before converting to UPPAAL.";
+                    return false;
+                }
+            }
+
+            message = string.Empty;
+            return true;
+        }
+
         [RelayCommand]
         private async Task LoadFile() => await OpenFile();
 
@@ -1249,6 +1547,12 @@ namespace BankSystem
         {
             try
             {
+                if (IsWorkspaceProject)
+                {
+                    MessageBox.Show("This project is analysed from saved files so its project and NuGet references stay accurate. Save changes externally, then reopen the project or solution to reload them.",
+                        "Project-Aware Mode", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
                 IsBusy = true;
                 StatusMessage = "Parsing C# code...";
 
@@ -1539,10 +1843,39 @@ namespace BankSystem
                     RequirementSettings = _settings.ToRequirementSettings()
                 };
 
-                var model = await _engine.GenerateModelAsync(request);
-                UppaalXml = model.XmlContent;
-                IsXmlReadOnly = false;
+                var confirmationRequired = GetPendingExternalCalls();
+                if (confirmationRequired.Count > 0)
+                {
+                    var approved = MessageBox.Show(
+                        "The selected model scope calls code outside the target project or code that cannot be resolved. " +
+                        "Each call will be represented as a bounded nondeterministic UPPAAL stub.\n\n" +
+                        string.Join(Environment.NewLine, confirmationRequired.Select(call => $"• {call}")) +
+                        "\n\nContinue with these assumptions?",
+                        "Review External Stub Assumptions", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                    if (approved != MessageBoxResult.Yes)
+                    {
+                        StatusMessage = "Model generation cancelled while external stub assumptions await review.";
+                        return;
+                    }
+                    request.ExternalStubAssumptionsConfirmed = true;
+                }
+
+                var model = IsWorkspaceProject && _workspaceAnalysis != null
+                    ? await _engine.GenerateModelAsync(_workspaceAnalysis, request)
+                    : await _engine.GenerateModelAsync(request);
+                if (!string.IsNullOrWhiteSpace(model.XmlContent))
+                {
+                    UppaalXml = model.XmlContent;
+                    IsXmlReadOnly = false;
+                }
                 ApplyGenerationReport(model);
+
+                if (model.Status != ModelGenerationStatus.Success)
+                {
+                    StatusMessage = model.StatusMessage;
+                    MessageBox.Show(model.StatusMessage, "Model Generation Blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
 
                 // Render visual preview
                 await DrawUppaalModelAsync(model);
@@ -1568,6 +1901,15 @@ namespace BankSystem
             {
                 IsBusy = false;
             }
+        }
+
+        private List<string> GetPendingExternalCalls()
+        {
+            CSharpSemanticAnalysisResult analysis = _workspaceAnalysis ?? _latestSemanticAnalysis;
+            if (analysis == null) return new List<string>();
+            var selected = BuildFunctionSelections();
+            return analysis.ResolveClosure(selected).SelectMany(function => function.UnresolvedCalls)
+                .Distinct(StringComparer.Ordinal).OrderBy(call => call, StringComparer.Ordinal).ToList();
         }
 
         [RelayCommand]
@@ -1975,10 +2317,13 @@ namespace BankSystem
 
             if (result == MessageBoxResult.Yes)
             {
+                DisposeWorkspaceContext();
                 _project = null;
                 CurrentProjectName = "No project loaded";
                 SourceCode = "";
                 Methods.Clear();
+                LoadedSourceFiles.Clear();
+                HasMultipleFiles = false;
                 FunctionSelections.Clear();
                 Assumptions.Clear();
                 Domains.Clear();

@@ -18,6 +18,7 @@ namespace CSharpToUppaal.Backend.Services
     {
         Task<UppaalModel> GenerateModelFromCodeAsync(string code, string modelName);
         Task<UppaalModel> GenerateModelFromRequestAsync(ModelGenerationRequest request);
+        Task<UppaalModel> GenerateModelFromAnalysisAsync(CSharpSemanticAnalysisResult analysis, ModelGenerationRequest request);
         Task<UppaalModel> GenerateModelFromCfgAsync(ControlFlowGraph cfg, string modelName);
         Task<string> GenerateUppaalXmlAsync(UppaalModel model);
         Task<UppaalModel> GenerateModelFromProjectAsync(Project project);
@@ -73,17 +74,52 @@ namespace CSharpToUppaal.Backend.Services
                 var analysis = await _semanticAnalyzer
                     .AnalyzeSourceCodeAsync(request.SourceCode, request.FileName)
                     .ConfigureAwait(false);
+                return await GenerateModelFromAnalysisAsync(analysis, request).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                return CreateGenerationError(request.ProjectName, ex.Message);
+            }
+        }
+
+        public async Task<UppaalModel> GenerateModelFromAnalysisAsync(CSharpSemanticAnalysisResult analysis, ModelGenerationRequest request)
+        {
+            try
+            {
+                if (analysis.HasSyntaxErrors)
+                {
+                    return CreateBlockedModel(request.ProjectName, "C# syntax errors must be corrected before generating a UPPAAL model.", analysis.SyntaxDiagnostics, "Syntax");
+                }
 
                 var selections = NormalizeSelections(analysis.Functions, request.FunctionSelections);
                 var included = analysis.ResolveClosure(selections);
-                var requirementQueries = await InterpretRequirementsAsync(request, analysis).ConfigureAwait(false);
+                var externalCalls = included.SelectMany(function => function.UnresolvedCalls)
+                    .Distinct(StringComparer.Ordinal).OrderBy(call => call, StringComparer.Ordinal).ToList();
+                if (externalCalls.Count > 0 && !request.ExternalStubAssumptionsConfirmed)
+                {
+                    return CreateBlockedModel(request.ProjectName,
+                        "Review and confirm the bounded assumptions for external calls before generating the model.",
+                        externalCalls, "ExternalStubReview");
+                }
 
+                var requirementQueries = await InterpretRequirementsAsync(request, analysis).ConfigureAwait(false);
                 var builder = new SemanticUppaalBuilder(analysis, selections, included, request.DomainOverrides);
                 var model = builder.Build(request.ProjectName, requirementQueries.Concat(request.UserQueries).ToList());
 
                 model.GenerationReport.Functions = analysis.Functions;
                 model.GenerationReport.IncludedFunctions = included.ToList();
                 model.GenerationReport.Assumptions.InsertRange(0, analysis.Assumptions);
+                foreach (var externalCall in externalCalls)
+                {
+                    model.GenerationReport.Assumptions.Add(new TranslationAssumption
+                    {
+                        Severity = AssumptionSeverity.Warning,
+                        Category = "ExternalStub",
+                        SymbolName = externalCall,
+                        Message = $"External call '{externalCall}' is represented as a bounded nondeterministic stub.",
+                        IsUserEditable = true
+                    });
+                }
                 foreach (var diagnostic in analysis.Diagnostics)
                 {
                     model.GenerationReport.Assumptions.Add(new TranslationAssumption
@@ -120,24 +156,7 @@ namespace CSharpToUppaal.Backend.Services
             }
             catch (Exception ex)
             {
-                return new UppaalModel
-                {
-                    Name = request.ProjectName,
-                    Status = ModelGenerationStatus.GenerationError,
-                    StatusMessage = $"Failed to generate UPPAAL model: {ex.Message}",
-                    GenerationReport = new GenerationReport
-                    {
-                        Assumptions =
-                        {
-                            new TranslationAssumption
-                            {
-                                Severity = AssumptionSeverity.Error,
-                                Category = "Generation",
-                                Message = ex.Message
-                            }
-                        }
-                    }
-                };
+                return CreateGenerationError(request.ProjectName, ex.Message);
             }
         }
 
@@ -176,6 +195,42 @@ namespace CSharpToUppaal.Backend.Services
             return Task.FromResult(SerializeModel(model.Name, string.Empty, model.Templates, queries));
         }
 
+        private static UppaalModel CreateBlockedModel(string projectName, string message, IEnumerable<string> details, string category)
+        {
+            var model = new UppaalModel
+            {
+                Name = projectName,
+                Status = ModelGenerationStatus.ValidationError,
+                StatusMessage = message
+            };
+            foreach (var detail in details)
+            {
+                model.GenerationReport.Assumptions.Add(new TranslationAssumption
+                {
+                    Severity = AssumptionSeverity.Error,
+                    Category = category,
+                    Message = detail,
+                    IsUserEditable = false
+                });
+            }
+            model.GenerationReport.Summary = message;
+            return model;
+        }
+
+        private static UppaalModel CreateGenerationError(string projectName, string error) => new()
+        {
+            Name = projectName,
+            Status = ModelGenerationStatus.GenerationError,
+            StatusMessage = $"Failed to generate UPPAAL model: {error}",
+            GenerationReport = new GenerationReport
+            {
+                Assumptions =
+                {
+                    new TranslationAssumption { Severity = AssumptionSeverity.Error, Category = "Generation", Message = error }
+                }
+            }
+        };
+
         private async Task<List<GeneratedQuery>> InterpretRequirementsAsync(ModelGenerationRequest request, CSharpSemanticAnalysisResult analysis)
         {
             var queries = new List<GeneratedQuery>();
@@ -186,7 +241,7 @@ namespace CSharpToUppaal.Backend.Services
             var context = new RequirementTranslationContext
             {
                 Functions = analysis.Functions,
-                Variables = analysis.Root.DescendantNodes().OfType<VariableDeclaratorSyntax>().Select(v => v.Identifier.Text).Distinct().ToList()
+                Variables = analysis.GetVariableDeclarators().Select(v => v.Identifier.Text).Distinct().ToList()
             };
 
             var interpretations = await service
@@ -734,7 +789,7 @@ namespace CSharpToUppaal.Backend.Services
             private bool TryResolveTemplateCall(InvocationExpressionSyntax invocation, out FunctionDescriptor function)
             {
                 function = null!;
-                var info = _analysis.SemanticModel.GetSymbolInfo(invocation);
+                var info = _analysis.GetSemanticModel(invocation).GetSymbolInfo(invocation);
                 var symbol = info.Symbol as IMethodSymbol ?? info.CandidateSymbols.OfType<IMethodSymbol>().FirstOrDefault();
                 if (symbol == null)
                     return false;
@@ -913,7 +968,7 @@ namespace CSharpToUppaal.Backend.Services
             private string TranslateInvocation(InvocationExpressionSyntax invocation, FunctionDescriptor currentFunction, string fallbackType, out string? unknownCallName)
             {
                 unknownCallName = null;
-                var info = _analysis.SemanticModel.GetSymbolInfo(invocation);
+                var info = _analysis.GetSemanticModel(invocation).GetSymbolInfo(invocation);
                 var symbol = info.Symbol as IMethodSymbol ?? info.CandidateSymbols.OfType<IMethodSymbol>().FirstOrDefault();
 
                 if (symbol != null)

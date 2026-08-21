@@ -386,6 +386,8 @@ namespace CSharpToUppaal.Backend.Models
         public List<GeneratedQuery> UserQueries { get; set; } = new();
         public string RequirementsText { get; set; } = string.Empty;
         public OllamaRequirementSettings RequirementSettings { get; set; } = new();
+        /// <summary>Set only after the user has reviewed non-target/external call stubs.</summary>
+        public bool ExternalStubAssumptionsConfirmed { get; set; }
     }
 
     public class OllamaRequirementSettings
