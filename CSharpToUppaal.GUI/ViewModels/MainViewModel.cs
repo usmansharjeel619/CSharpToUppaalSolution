@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -29,6 +30,9 @@ namespace CSharpToUppaal.GUI.ViewModels
         private CSharpToUppaal.Backend.Models.Project _project;
         private Canvas _cfgCanvas;
         private Canvas _uppaalCanvas;
+        private static readonly Regex LocalVariableDeclarationPattern = new(
+            @"\b(?:bool|byte|sbyte|short|ushort|int|uint|long|ulong|float|double|decimal|char|string|var)\s+([A-Za-z_][A-Za-z0-9_]*)",
+            RegexOptions.Compiled);
 
         [ObservableProperty]
         private string _statusMessage = "Ready";
@@ -224,7 +228,10 @@ namespace BankSystem
 
                 _cfgCanvas.Children.Clear();
 
-                var cfg = await _engine.GenerateCfgForMethodAsync(method);
+                // The semantic CFG remains unchanged for model generation. This compact
+                // projection only makes the visual CFG easier to read.
+                var cfg = CfgPresentationSimplifier.Simplify(
+                    await _engine.GenerateCfgForMethodAsync(method));
 
                 // Layout parameters
                 double nodeWidth = 140;
@@ -1396,16 +1403,14 @@ namespace BankSystem
                 var context = new RequirementTranslationContext
                 {
                     Functions = FunctionSelections.Select(f => f.Function).ToList(),
-                    Variables = Domains.Select(d => d.Name.Split('.').Last()).Distinct().ToList()
+                    Variables = Domains.Select(d => d.Name.Split('.').Last()).Distinct().ToList(),
+                    VariableReferences = BuildUppaalVariableReferences()
                 };
 
-                if (context.Variables.Count == 0)
-                {
-                    context.Variables = Methods
-                        .SelectMany(m => m.Parameters.Select(p => p.Name))
-                        .Distinct()
-                        .ToList();
-                }
+                context.Variables = context.Variables
+                    .Concat(context.Functions.SelectMany(CollectFunctionVariableNames))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
 
                 var settings = _settings.ToRequirementSettings();
                 var interpretations = await service.InterpretAsync(
@@ -1437,6 +1442,49 @@ namespace BankSystem
             {
                 IsBusy = false;
             }
+        }
+
+        private Dictionary<string, string> BuildUppaalVariableReferences()
+        {
+            var references = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var domain in Domains)
+            {
+                var separator = domain.Name.LastIndexOf('.');
+                if (separator <= 0 || separator >= domain.Name.Length - 1)
+                    continue;
+
+                var functionDisplayName = domain.Name[..separator];
+                var variable = domain.Name[(separator + 1)..];
+                var function = FunctionSelections
+                    .Select(selection => selection.Function)
+                    .FirstOrDefault(candidate => candidate.DisplayName.Equals(functionDisplayName, StringComparison.Ordinal));
+
+                if (function != null && !references.ContainsKey(variable))
+                    references[variable] = $"{RequirementTranslationService.ProcessName(function)}.{RequirementTranslationService.Sanitize(variable)}";
+            }
+
+            // Requirements can be interpreted before the model has been generated.
+            // In that case there are no domain rows yet, so derive valid template-local
+            // references from the semantic function bodies.
+            foreach (var function in FunctionSelections.Select(selection => selection.Function))
+            {
+                foreach (var variable in CollectFunctionVariableNames(function))
+                {
+                    if (!references.ContainsKey(variable))
+                        references[variable] = $"{RequirementTranslationService.ProcessName(function)}.{RequirementTranslationService.Sanitize(variable)}";
+                }
+            }
+
+            return references;
+        }
+
+        private static IEnumerable<string> CollectFunctionVariableNames(FunctionDescriptor function)
+        {
+            foreach (var parameter in function.Parameters)
+                yield return parameter.Name;
+
+            foreach (Match match in LocalVariableDeclarationPattern.Matches(function.Body ?? string.Empty))
+                yield return match.Groups[1].Value;
         }
 
         [RelayCommand]

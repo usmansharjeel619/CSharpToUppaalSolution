@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using CSharpToUppaal.Backend.Models;
@@ -24,6 +25,11 @@ namespace CSharpToUppaal.Backend.Services
     {
         public List<FunctionDescriptor> Functions { get; set; } = new();
         public List<string> Variables { get; set; } = new();
+        /// <summary>
+        /// Maps a source-level variable name to the UPPAAL expression that refers to
+        /// it in the generated system (for example, deposits -> P_Account_Main.deposits).
+        /// </summary>
+        public Dictionary<string, string> VariableReferences { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     public class RequirementTranslationService : IRequirementTranslationService
@@ -272,30 +278,76 @@ namespace CSharpToUppaal.Backend.Services
 
         private static string ExtractPredicate(string requirement, RequirementTranslationContext context)
         {
-            foreach (var variable in context.Variables.Distinct(StringComparer.Ordinal))
+            foreach (var variable in context.Variables
+                         .Concat(context.VariableReferences.Keys)
+                         .Distinct(StringComparer.OrdinalIgnoreCase)
+                         .OrderByDescending(variable => variable.Length))
             {
-                var idx = requirement.IndexOf(variable, StringComparison.OrdinalIgnoreCase);
-                if (idx < 0)
+                var variablePattern = Regex.Escape(variable);
+                var qualitativeComparison = Regex.Match(
+                    requirement,
+                    $@"(?ix)^\s*(?:the\s+)?{variablePattern}\s+
+                        (?:(?:must|should)\s+)?
+                        (?:(?:remain|stay|be|is)\s+)?
+                        (?<quality>positive|negative|non[-\s]?negative|non[-\s]?positive)\s*\.?\s*$");
+
+                if (qualitativeComparison.Success)
+                {
+                    var qualitativeOperator = qualitativeComparison.Groups["quality"].Value.ToLowerInvariant() switch
+                    {
+                        "positive" => "> 0",
+                        "negative" => "< 0",
+                        "non-negative" or "nonnegative" => ">= 0",
+                        "non-positive" or "nonpositive" => "<= 0",
+                        _ => string.Empty
+                    };
+
+                    if (!string.IsNullOrEmpty(qualitativeOperator))
+                        return $"{ResolveVariableReference(variable, context)} {qualitativeOperator}";
+                }
+
+                var comparison = Regex.Match(
+                    requirement,
+                    $@"(?ix)^\s*(?:the\s+)?{variablePattern}\s+
+                        (?:(?:must|should)(?:\s+be)?\s+|is\s+)?
+                        (?<operator>
+                            greater\s+than|more\s+than|above|
+                            at\s+least|not\s+less\s+than|
+                            less\s+than|fewer\s+than|below|
+                            at\s+most|no\s+more\s+than|not\s+greater\s+than|
+                            not\s+equal\s+to|different\s+from|
+                            equal\s+to|equals|equal\s+to|is
+                        )\s+
+                        (?<value>-?\d+|true|false)\s*\.?\s*$");
+
+                if (!comparison.Success)
                     continue;
 
-                var predicate = requirement[idx..]
-                    .Replace(" is ", " == ", StringComparison.OrdinalIgnoreCase)
-                    .Replace(" equals ", " == ", StringComparison.OrdinalIgnoreCase)
-                    .Replace(" not equal ", " != ", StringComparison.OrdinalIgnoreCase);
+                var op = comparison.Groups["operator"].Value.ToLowerInvariant() switch
+                {
+                    "greater than" or "more than" or "above" => ">",
+                    "at least" or "not less than" => ">=",
+                    "less than" or "fewer than" or "below" => "<",
+                    "at most" or "no more than" or "not greater than" => "<=",
+                    "not equal to" or "different from" => "!=",
+                    "equal to" or "equals" or "is" => "==",
+                    _ => string.Empty
+                };
 
-                return SanitizePredicate(predicate, context);
+                if (string.IsNullOrEmpty(op))
+                    continue;
+
+                return $"{ResolveVariableReference(variable, context)} {op} {comparison.Groups["value"].Value.ToLowerInvariant()}";
             }
 
             return string.Empty;
         }
 
-        private static string SanitizePredicate(string predicate, RequirementTranslationContext context)
+        private static string ResolveVariableReference(string variable, RequirementTranslationContext context)
         {
-            var result = predicate;
-            foreach (var variable in context.Variables.Distinct(StringComparer.Ordinal))
-                result = result.Replace(variable, Sanitize(variable), StringComparison.OrdinalIgnoreCase);
-
-            return result.Trim().TrimEnd('.');
+            return context.VariableReferences.TryGetValue(variable, out var reference)
+                ? reference
+                : Sanitize(variable);
         }
 
         private static string BuildQueryName(string requirementText, int index)
@@ -314,11 +366,25 @@ namespace CSharpToUppaal.Backend.Services
             if (string.IsNullOrWhiteSpace(formula))
                 return false;
 
-            if (formula.Contains("deadlock", StringComparison.Ordinal))
+            var normalized = formula.Trim();
+            if (normalized.Equals("A[] not deadlock", StringComparison.Ordinal))
                 return true;
 
-            return context.Functions.Any(f => formula.Contains(ProcessName(f), StringComparison.Ordinal))
-                || context.Variables.Any(v => formula.Contains(Sanitize(v), StringComparison.Ordinal));
+            // Reject natural-language text even when it contains a valid variable name.
+            if (Regex.IsMatch(normalized, @"\b(must|should|greater than|less than|equal to)\b", RegexOptions.IgnoreCase))
+                return false;
+
+            var queryMatch = Regex.Match(normalized, @"^(?:A\[\]|E<>|A<>|E\[\])\s+(.+)$");
+            var leadsToMatch = Regex.Match(normalized, @"^(.+)\s+-->\s+(.+)$");
+            if (!queryMatch.Success && !leadsToMatch.Success)
+                return false;
+
+            if (!Regex.IsMatch(normalized, @"(?:==|!=|>=|<=|(?<!-)>(?!>)|(?<!<)<(?!<)|\.Done\b|\btrue\b|\bfalse\b)"))
+                return false;
+
+            return context.Functions.Any(function => normalized.Contains(ProcessName(function), StringComparison.Ordinal))
+                || context.VariableReferences.Values.Any(reference => normalized.Contains(reference, StringComparison.Ordinal))
+                || context.Variables.Any(variable => normalized.Contains(Sanitize(variable), StringComparison.Ordinal));
         }
 
         private static List<string> SplitRequirements(string requirementsText)
@@ -330,10 +396,10 @@ namespace CSharpToUppaal.Backend.Services
                 .ToList();
         }
 
-        private static string ProcessName(FunctionDescriptor function)
+        public static string ProcessName(FunctionDescriptor function)
             => Sanitize($"P_{function.DisplayName}");
 
-        private static string Sanitize(string raw)
+        public static string Sanitize(string raw)
         {
             if (string.IsNullOrWhiteSpace(raw))
                 return "value";

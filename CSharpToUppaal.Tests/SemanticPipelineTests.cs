@@ -35,6 +35,44 @@ public class SemanticPipelineTests
         """;
 
     [Fact]
+    public void CfgPresentationSimplifier_MergesOnlyLinearDeclarationRuns()
+    {
+        var entry = new CfgNode { Id = "entry", Label = "Entry", Type = NodeType.Entry };
+        var first = new CfgNode { Id = "first", Label = "Declaration", Type = NodeType.Declaration, Code = "int a = 1;" };
+        var second = new CfgNode { Id = "second", Label = "Declaration", Type = NodeType.Declaration, Code = "int b = 2;" };
+        var condition = new CfgNode { Id = "condition", Label = "If Condition", Type = NodeType.Condition };
+        var branchDeclaration = new CfgNode { Id = "branch", Label = "Declaration", Type = NodeType.Declaration, Code = "int c = 3;" };
+        var exit = new CfgNode { Id = "exit", Label = "Exit", Type = NodeType.Exit };
+        var source = new ControlFlowGraph
+        {
+            MethodName = "Example",
+            EntryNodeId = entry.Id,
+            ExitNodeId = exit.Id,
+            Nodes = [entry, first, second, condition, branchDeclaration, exit],
+            Edges =
+            [
+                new CfgEdge { FromNodeId = entry.Id, ToNodeId = first.Id },
+                new CfgEdge { FromNodeId = first.Id, ToNodeId = second.Id },
+                new CfgEdge { FromNodeId = second.Id, ToNodeId = condition.Id },
+                new CfgEdge { FromNodeId = condition.Id, ToNodeId = branchDeclaration.Id, Label = "true" },
+                new CfgEdge { FromNodeId = condition.Id, ToNodeId = exit.Id, Label = "false" },
+                new CfgEdge { FromNodeId = branchDeclaration.Id, ToNodeId = exit.Id }
+            ]
+        };
+
+        var display = CfgPresentationSimplifier.Simplify(source);
+
+        var merged = Assert.Single(display.Nodes, node => node.Id == first.Id);
+        Assert.Equal("Declarations", merged.Label);
+        Assert.Contains("int a = 1;", merged.Code);
+        Assert.Contains("int b = 2;", merged.Code);
+        Assert.DoesNotContain(display.Nodes, node => node.Id == second.Id);
+        Assert.Contains(display.Nodes, node => node.Id == branchDeclaration.Id);
+        Assert.Contains(display.Edges, edge => edge.FromNodeId == first.Id && edge.ToNodeId == condition.Id);
+        Assert.Equal(2, source.Nodes.Count(node => node.Type == NodeType.Declaration && node.Id is "first" or "second"));
+    }
+
+    [Fact]
     public async Task SemanticAnalyzerDiscoversFunctionsAndCallGraph()
     {
         var analyzer = new CSharpSemanticAnalyzer();
@@ -150,6 +188,45 @@ public class SemanticPipelineTests
 
         var query = Assert.Single(interpretations.SelectMany(i => i.GeneratedQueries));
         Assert.Equal("E<> P_Calculator_Compute.Done", query.Formula);
+    }
+
+    [Fact]
+    public async Task RequirementRulesTranslateNaturalLanguageComparisonsToUppaalSyntax()
+    {
+        var service = new RequirementTranslationService();
+        var interpretations = await service.InterpretAsync(
+            "deposits must be greater than 0",
+            new RequirementTranslationContext
+            {
+                Variables = { "deposits" },
+                VariableReferences = { ["deposits"] = "P_Account_Main.deposits" }
+            },
+            new OllamaRequirementSettings { Enabled = false });
+
+        var query = Assert.Single(interpretations.SelectMany(interpretation => interpretation.GeneratedQueries));
+        Assert.Equal("A[] P_Account_Main.deposits > 0", query.Formula);
+        Assert.DoesNotContain("must", query.Formula, StringComparison.OrdinalIgnoreCase);
+        Assert.True(query.IsValidated);
+    }
+
+    [Theory]
+    [InlineData("the balance must remain positive", "A[] P_Account_CalculateBalance.balance > 0")]
+    [InlineData("balance should stay non-negative", "A[] P_Account_CalculateBalance.balance >= 0")]
+    [InlineData("balance must be negative", "A[] P_Account_CalculateBalance.balance < 0")]
+    public async Task RequirementRulesTranslateQualitativeNumericRequirements(string requirement, string expectedFormula)
+    {
+        var service = new RequirementTranslationService();
+        var interpretations = await service.InterpretAsync(
+            requirement,
+            new RequirementTranslationContext
+            {
+                Variables = { "balance" },
+                VariableReferences = { ["balance"] = "P_Account_CalculateBalance.balance" }
+            },
+            new OllamaRequirementSettings { Enabled = false });
+
+        var query = Assert.Single(interpretations.SelectMany(interpretation => interpretation.GeneratedQueries));
+        Assert.Equal(expectedFormula, query.Formula);
     }
 
     [Fact]

@@ -272,14 +272,15 @@ namespace CSharpToUppaal.Backend
 
         public async Task<string> GenerateDotGraphAsync(ControlFlowGraph cfg)
         {
+            var displayCfg = CfgPresentationSimplifier.Simplify(cfg);
             var dotBuilder = new System.Text.StringBuilder();
 
-            dotBuilder.AppendLine($"digraph {cfg.MethodName} {{");
+            dotBuilder.AppendLine($"digraph {displayCfg.MethodName} {{");
             dotBuilder.AppendLine("  rankdir=TB;");
             dotBuilder.AppendLine("  node [shape=box, style=rounded];");
 
             // Nodes
-            foreach (var node in cfg.Nodes)
+            foreach (var node in displayCfg.Nodes)
             {
                 var shape = node.Type switch
                 {
@@ -303,7 +304,7 @@ namespace CSharpToUppaal.Backend
             }
 
             // Edges
-            foreach (var edge in cfg.Edges)
+            foreach (var edge in displayCfg.Edges)
             {
                 var label = !string.IsNullOrEmpty(edge.Label) ? $" [label=\"{edge.Label}\"]" : "";
                 dotBuilder.AppendLine($"  {edge.FromNodeId} -> {edge.ToNodeId}{label};");
