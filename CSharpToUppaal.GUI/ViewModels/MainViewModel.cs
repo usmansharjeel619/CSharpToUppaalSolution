@@ -261,12 +261,36 @@ namespace BankSystem
                 var cfg = CfgPresentationSimplifier.Simplify(
                     await _engine.GenerateCfgForMethodAsync(method));
 
-                // Layout parameters
-                double nodeWidth = 140;
-                double nodeHeight = 64;
-                double horizontalSpacing = 220;
-                double verticalSpacing = 110;
-                double startX = 350; // Center starting position
+                // Measure declarations before layout so every line fits in its node.
+                var declarationText = new Dictionary<string, TextBlock>();
+                var nodeSizes = new Dictionary<string, Size>();
+                foreach (var node in cfg.Nodes)
+                {
+                    var size = new Size(140, 64);
+                    if (node.Type == CSharpToUppaal.Backend.Models.NodeType.Declaration &&
+                        !string.IsNullOrEmpty(node.Code))
+                    {
+                        var code = new TextBlock
+                        {
+                            Text = node.Code,
+                            FontFamily = new FontFamily("Consolas"),
+                            FontSize = 12,
+                            TextAlignment = TextAlignment.Left,
+                            TextWrapping = TextWrapping.Wrap
+                        };
+                        code.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                        size.Width = Math.Clamp(code.DesiredSize.Width + 24, 220, 440);
+                        code.Width = size.Width - 24;
+                        code.Measure(new Size(code.Width, double.PositiveInfinity));
+                        size.Height = Math.Max(64, code.DesiredSize.Height + 40);
+                        declarationText[node.Id] = code;
+                    }
+                    nodeSizes[node.Id] = size;
+                }
+
+                double horizontalSpacing = nodeSizes.Values.Max(size => size.Width) + 80;
+                double verticalSpacing = nodeSizes.Values.Max(size => size.Height) + 46;
+                double startX = 350;
                 double startY = 60;
 
                 // Calculate positions for nodes with hierarchical layout
@@ -349,6 +373,22 @@ namespace BankSystem
                     }
                 }
 
+                // Center differently sized nodes on their layout column.
+                foreach (var id in nodePositions.Keys.ToList())
+                {
+                    var position = nodePositions[id];
+                    nodePositions[id] = new Point(position.X + 70 - nodeSizes[id].Width / 2, position.Y);
+                }
+                var leftmost = nodePositions.Values.Min(position => position.X);
+                if (leftmost < 50)
+                {
+                    foreach (var id in nodePositions.Keys.ToList())
+                    {
+                        var position = nodePositions[id];
+                        nodePositions[id] = new Point(position.X + 50 - leftmost, position.Y);
+                    }
+                }
+
                 // Draw edges first (so they appear behind nodes)
                 foreach (var edge in cfg.Edges)
                 {
@@ -358,17 +398,22 @@ namespace BankSystem
                         var fromPos = nodePositions[edge.FromNodeId];
                         var toPos = nodePositions[edge.ToNodeId];
 
+                        var fromSize = nodeSizes[edge.FromNodeId];
+                        var toSize = nodeSizes[edge.ToNodeId];
+
                         // Calculate center points
-                        double fromCenterX = fromPos.X + nodeWidth / 2;
-                        double fromCenterY = fromPos.Y + nodeHeight / 2;
-                        double toCenterX = toPos.X + nodeWidth / 2;
-                        double toCenterY = toPos.Y + nodeHeight / 2;
+                        double fromCenterX = fromPos.X + fromSize.Width / 2;
+                        double fromCenterY = fromPos.Y + fromSize.Height / 2;
+                        double toCenterX = toPos.X + toSize.Width / 2;
+                        double toCenterY = toPos.Y + toSize.Height / 2;
 
                         // Calculate angle between nodes
                         var angle = Math.Atan2(toCenterY - fromCenterY, toCenterX - fromCenterX);
                         
                         // Calculate the edge of the target node (adjust arrow to stop at node boundary)
-                        double arrowMargin = 30; // Distance from center to edge of node
+                        double arrowMargin = Math.Min(
+                            toSize.Width / (2 * Math.Max(Math.Abs(Math.Cos(angle)), 0.000001)),
+                            toSize.Height / (2 * Math.Max(Math.Abs(Math.Sin(angle)), 0.000001)));
                         double arrowTipX = toCenterX - arrowMargin * Math.Cos(angle);
                         double arrowTipY = toCenterY - arrowMargin * Math.Sin(angle);
 
@@ -428,8 +473,8 @@ namespace BankSystem
                                     Foreground = new SolidColorBrush(Color.FromRgb(100, 200, 255))
                                 }
                             };
-                            Canvas.SetLeft(labelBg, (fromPos.X + toPos.X) / 2 + nodeWidth / 4);
-                            Canvas.SetTop(labelBg, (fromPos.Y + toPos.Y) / 2 + nodeHeight / 4);
+                            Canvas.SetLeft(labelBg, (fromPos.X + toPos.X) / 2 + fromSize.Width / 4);
+                            Canvas.SetTop(labelBg, (fromPos.Y + toPos.Y) / 2 + fromSize.Height / 4);
                             _cfgCanvas.Children.Add(labelBg);
                         }
                     }
@@ -441,6 +486,8 @@ namespace BankSystem
                     if (!nodePositions.ContainsKey(node.Id)) continue;
 
                     var pos = nodePositions[node.Id];
+                    var nodeWidth = nodeSizes[node.Id].Width;
+                    var nodeHeight = nodeSizes[node.Id].Height;
 
                     // Choose fill/stroke colors per node type (dark-theme friendly, saturated fills)
                     SolidColorBrush fillColor;
@@ -556,8 +603,15 @@ namespace BankSystem
                     Canvas.SetTop(text, pos.Y + 6);
                     _cfgCanvas.Children.Add(text);
 
-                    // Add node code (truncated)
-                    if (!string.IsNullOrEmpty(node.Code))
+                    // Declaration text is fully visible; other nodes retain compact previews.
+                    if (declarationText.TryGetValue(node.Id, out var declarationCode))
+                    {
+                        declarationCode.Foreground = codeColor;
+                        Canvas.SetLeft(declarationCode, pos.X + 12);
+                        Canvas.SetTop(declarationCode, pos.Y + 28);
+                        _cfgCanvas.Children.Add(declarationCode);
+                    }
+                    else if (!string.IsNullOrEmpty(node.Code))
                     {
                         var codeText = node.Code.Length > 22 ?
                             node.Code.Substring(0, 19) + "..." : node.Code;
@@ -580,8 +634,8 @@ namespace BankSystem
                 // Update canvas size
                 if (nodePositions.Any())
                 {
-                    var maxX = nodePositions.Values.Max(p => p.X) + nodeWidth + 50;
-                    var maxY = nodePositions.Values.Max(p => p.Y) + nodeHeight + 50;
+                    var maxX = nodePositions.Max(pair => pair.Value.X + nodeSizes[pair.Key].Width) + 50;
+                    var maxY = nodePositions.Max(pair => pair.Value.Y + nodeSizes[pair.Key].Height) + 50;
                     _cfgCanvas.Width = Math.Max(800, maxX);
                     _cfgCanvas.Height = Math.Max(600, maxY);
                 }
@@ -1972,13 +2026,11 @@ namespace BankSystem
                 var confirmationRequired = GetPendingExternalCalls();
                 if (confirmationRequired.Count > 0)
                 {
-                    var approved = MessageBox.Show(
-                        "The selected model scope calls code outside the target project or code that cannot be resolved. " +
-                        "Each call will be represented as a bounded nondeterministic UPPAAL stub.\n\n" +
-                        string.Join(Environment.NewLine, confirmationRequired.Select(call => $"• {call}")) +
-                        "\n\nContinue with these assumptions?",
-                        "Review External Stub Assumptions", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                    if (approved != MessageBoxResult.Yes)
+                    var reviewDialog = new ExternalStubReviewDialog(confirmationRequired)
+                    {
+                        Owner = Application.Current.MainWindow
+                    };
+                    if (reviewDialog.ShowDialog() != true)
                     {
                         StatusMessage = "Model generation cancelled while external stub assumptions await review.";
                         return;
