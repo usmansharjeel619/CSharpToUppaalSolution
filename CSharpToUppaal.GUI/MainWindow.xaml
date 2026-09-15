@@ -216,6 +216,8 @@
                                 Command="{Binding RemoveFromUppaalModelCommand}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 Margin="4,8"/>
+                        <CheckBox Content="Single entry scope" IsChecked="{Binding SingleFunctionMode, Mode=TwoWay}" Foreground="White" VerticalAlignment="Center" Margin="14,0,4,0"/>
+                        <ComboBox ItemsSource="{Binding FunctionSelections}" SelectedItem="{Binding SelectedEntryFunction, Mode=TwoWay}" DisplayMemberPath="Signature" Width="240" VerticalAlignment="Center" ToolTip="Include this function and its called dependencies"/>
                         <TextBlock Text="{Binding GenerationReportText}"
                                    Foreground="White"
                                    VerticalAlignment="Center"
@@ -390,11 +392,29 @@
                     </GroupBox>
 
                     <GroupBox Grid.Row="2" Header="Variable Domains  (edit Min / Max then re-generate to apply)" Foreground="White" Margin="8">
-                        <DataGrid ItemsSource="{Binding Domains}"
+                        <DataGrid ItemsSource="{Binding DomainGroups}"
                                   AutoGenerateColumns="False"
                                   CanUserAddRows="False"
                                   GridLinesVisibility="Horizontal"
                                   HeadersVisibility="Column">
+                            <DataGrid.GroupStyle>
+                                <GroupStyle>
+                                    <GroupStyle.ContainerStyle>
+                                        <Style TargetType="GroupItem">
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="GroupItem">
+                                                        <Expander IsExpanded="True" Margin="8,4,0,4" Foreground="{StaticResource TextPrimaryBrush}">
+                                                            <Expander.Header><TextBlock Text="{Binding Name}" FontWeight="SemiBold"/></Expander.Header>
+                                                            <ItemsPresenter/>
+                                                        </Expander>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </GroupStyle.ContainerStyle>
+                                </GroupStyle>
+                            </DataGrid.GroupStyle>
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="260"/>
                                 <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="90"/>
@@ -402,6 +422,10 @@
                                 <DataGridTextColumn Header="Max" Binding="{Binding Max}" Width="80"/>
                                 <DataGridCheckBoxColumn Header="Bool" Binding="{Binding IsBoolean}" Width="70"/>
                                 <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="*"/>
+                                <DataGridTextColumn Header="Inference" Binding="{Binding InferenceStatus}" Width="110" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Source min" Binding="{Binding SourceMin}" Width="85" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Source max" Binding="{Binding SourceMax}" Width="85" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Evidence" Binding="{Binding SourceEvidence}" Width="300" IsReadOnly="True"/>
                             </DataGrid.Columns>
                         </DataGrid>
                     </GroupBox>
@@ -415,54 +439,93 @@
                 <Grid Background="{StaticResource BackgroundBrush}">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="180"/>
-                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="2*" MinHeight="150"/>
+                        <RowDefinition Height="3*" MinHeight="150"/>
                     </Grid.RowDefinitions>
-
-                    <StackPanel Grid.Row="0"
-                                Orientation="Horizontal"
-                                Background="{StaticResource PrimaryMidBrush}">
-                        <Button Content="Interpret Requirements"
-                                Command="{Binding InterpretRequirementsCommand}"
-                                Style="{StaticResource WhiteButtonStyle}"
-                                Margin="8"/>
-                        <Button Content="Load from File"
-                                Command="{Binding LoadRequirementsFromFileCommand}"
-                                Style="{StaticResource WhiteButtonStyle}"
-                                Margin="4"
-                                ToolTip="Load requirements text from a .txt or .md file"/>
-                        <TextBlock Text="Type requirements in plain English, then click Interpret Requirements to generate CTL queries."
-                                   Foreground="#AAA"
-                                   FontSize="11"
-                                   VerticalAlignment="Center"
-                                   Margin="12,0"/>
-                    </StackPanel>
-
-                    <TextBox Grid.Row="1"
-                             FontFamily="Consolas"
-                             FontSize="13"
-                             Text="{Binding RequirementsText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             AcceptsReturn="True"
-                             VerticalScrollBarVisibility="Auto"
-                             HorizontalScrollBarVisibility="Auto"
-                             Background="{StaticResource SurfaceBrush}"
-                             Foreground="{StaticResource TextPrimaryBrush}"
-                             Padding="10"
-                             Margin="8"/>
-
-                    <DataGrid Grid.Row="2"
-                              ItemsSource="{Binding GeneratedQueries}"
-                              AutoGenerateColumns="False"
-                              CanUserAddRows="False"
-                              GridLinesVisibility="Horizontal"
-                              HeadersVisibility="Column"
-                              Margin="8">
+                    <WrapPanel Background="{StaticResource PrimaryMidBrush}">
+                        <Button Content="Interpret all" Command="{Binding InterpretRequirementsCommand}" Style="{StaticResource WhiteButtonStyle}" Margin="8"/>
+                        <Button Content="Add free text" Command="{Binding AddRequirementCommand}" Style="{StaticResource WhiteButtonStyle}" Margin="8"/>
+                        <Button Content="Load from file" Command="{Binding LoadRequirementsFromFileCommand}" Style="{StaticResource WhiteButtonStyle}" Margin="8"/>
+                        <Button Content="Verify queries" Command="{Binding VerifyQueriesCommand}" Style="{StaticResource WhiteButtonStyle}" Margin="8" IsEnabled="{Binding IsNotBusy}"/>
+                        <TextBlock Text="{Binding ReadinessStatus}" Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="8" TextWrapping="Wrap"/>
+                    </WrapPanel>
+                    <Border Grid.Row="1" Background="{StaticResource SurfaceBrush}" Padding="8" Margin="8">
+                        <StackPanel>
+                            <TextBlock Text="Guided requirement — works without Ollama" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,8"/>
+                            <WrapPanel>
+                                <StackPanel Margin="0,0,8,8">
+                                    <TextBlock Text="Pattern" Foreground="{StaticResource TextPrimaryBrush}"/>
+                                    <ComboBox ItemsSource="{Binding TemplateKinds}" SelectedItem="{Binding TemplateKind}" Width="180" MinHeight="32" AutomationProperties.Name="Requirement pattern"/>
+                                </StackPanel>
+                                <StackPanel Margin="0,0,8,8">
+                                    <TextBlock Text="Variable or location" Foreground="{StaticResource TextPrimaryBrush}"/>
+                                    <ComboBox ItemsSource="{Binding RequirementSymbols}" SelectedItem="{Binding TemplateSymbol}" Width="260" MinHeight="32" AutomationProperties.Name="Requirement symbol"/>
+                                </StackPanel>
+                                <StackPanel Margin="0,0,8,8">
+                                    <TextBlock Text="Comparison" Foreground="{StaticResource TextPrimaryBrush}"/>
+                                    <ComboBox ItemsSource="{Binding ComparisonOperators}" SelectedItem="{Binding TemplateOperator}" Width="72" MinHeight="32" AutomationProperties.Name="Comparison operator"/>
+                                </StackPanel>
+                                <StackPanel Margin="0,0,8,8">
+                                    <TextBlock Text="Value (integer / Boolean)" Foreground="{StaticResource TextPrimaryBrush}"/>
+                                    <TextBox Text="{Binding TemplateValue, UpdateSourceTrigger=PropertyChanged}" Width="150" MinHeight="32" AutomationProperties.Name="Integer comparison value">
+                                        <TextBox.Style>
+                                            <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+                                                <Style.Triggers><DataTrigger Binding="{Binding TemplateBoolean}" Value="True"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger></Style.Triggers>
+                                            </Style>
+                                        </TextBox.Style>
+                                    </TextBox>
+                                    <ComboBox ItemsSource="{Binding BooleanValues}" SelectedItem="{Binding TemplateValue}" Width="150" MinHeight="32" Visibility="{Binding TemplateBoolean, Converter={StaticResource BoolToVis}}" AutomationProperties.Name="Boolean comparison value"/>
+                                </StackPanel>
+                                <StackPanel Margin="0,0,8,8">
+                                    <TextBlock Text="Evaluation" Foreground="{StaticResource TextPrimaryBrush}"/>
+                                    <ComboBox ItemsSource="{Binding EvaluationScopes}" SelectedItem="{Binding TemplateScope}" Width="150" MinHeight="32" AutomationProperties.Name="Evaluation scope"/>
+                                </StackPanel>
+                                <StackPanel Margin="0,0,8,8">
+                                    <TextBlock Text="Completion function" Foreground="{StaticResource TextPrimaryBrush}"/>
+                                    <ComboBox ItemsSource="{Binding ModelFunctionSelections}" SelectedItem="{Binding TemplateFunction}" DisplayMemberPath="Signature" Width="240" MinHeight="32" AutomationProperties.Name="Completion function"/>
+                                </StackPanel>
+                                <StackPanel Margin="0,0,8,8">
+                                    <TextBlock Text="Response location (conditional response)" Foreground="{StaticResource TextPrimaryBrush}"/>
+                                    <ComboBox ItemsSource="{Binding RequirementLocations}" SelectedItem="{Binding TemplateTarget}" Width="260" MinHeight="32" AutomationProperties.Name="Response location"/>
+                                </StackPanel>
+                                <Button Content="Add guided requirement" Command="{Binding AddGuidedRequirementCommand}" Style="{StaticResource WhiteButtonStyle}" MinHeight="40" VerticalAlignment="Bottom" Margin="0,0,0,8"/>
+                            </WrapPanel>
+                            <TextBlock Text="{Binding RequirementHelp}" Foreground="{StaticResource TextPrimaryBrush}" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+                    <ScrollViewer Grid.Row="2" Margin="8" VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding RequirementEntries}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" Padding="8" Margin="0,0,0,8">
+                                        <StackPanel>
+                                            <DockPanel>
+                                                <WrapPanel DockPanel.Dock="Right">
+                                                    <Button Content="Interpret" Command="{Binding DataContext.InterpretRequirementCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" CommandParameter="{Binding}" Style="{StaticResource WhiteButtonStyle}" MinHeight="32"/>
+                                                    <Button Content="↑" ToolTip="Move up" Command="{Binding DataContext.MoveRequirementUpCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" CommandParameter="{Binding}" Style="{StaticResource WhiteButtonStyle}" MinHeight="32"/>
+                                                    <Button Content="↓" ToolTip="Move down" Command="{Binding DataContext.MoveRequirementDownCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" CommandParameter="{Binding}" Style="{StaticResource WhiteButtonStyle}" MinHeight="32"/>
+                                                    <Button Content="Remove" Command="{Binding DataContext.RemoveRequirementCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" CommandParameter="{Binding}" Style="{StaticResource WhiteButtonStyle}" MinHeight="32"/>
+                                                </WrapPanel>
+                                                <TextBlock Text="{Binding Status}" Foreground="{StaticResource TextPrimaryBrush}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                            </DockPanel>
+                                            <TextBox Text="{Binding Text, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="48" Padding="8" Margin="0,8,0,0" Background="{StaticResource BackgroundBrush}" Foreground="{StaticResource TextPrimaryBrush}" AutomationProperties.Name="Requirement text"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                    <DataGrid Grid.Row="3" ItemsSource="{Binding GeneratedQueries}" AutoGenerateColumns="False" CanUserAddRows="False" Margin="8">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="170"/>
-                            <DataGridTextColumn Header="Formula" Binding="{Binding Formula}" Width="360"/>
-                            <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="90" IsReadOnly="True"/>
-                            <DataGridCheckBoxColumn Header="Valid" Binding="{Binding IsValidated}" Width="70" IsReadOnly="True"/>
-                            <DataGridTextColumn Header="Comment" Binding="{Binding Comment}" Width="*"/>
+                            <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="100" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="180" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Formula" Binding="{Binding Formula, UpdateSourceTrigger=LostFocus}" Width="300"/>
+                            <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="80" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Structure" Binding="{Binding StructuralStatus}" Width="110" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Verification" Binding="{Binding VerificationStatus}" Width="110" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Diagnostics" Binding="{Binding ValidationDiagnostics}" Width="180" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Evidence / comment" Binding="{Binding Comment}" Width="*" MinWidth="180"/>
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>

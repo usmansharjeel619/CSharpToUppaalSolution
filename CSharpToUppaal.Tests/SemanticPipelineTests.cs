@@ -365,7 +365,7 @@ public class SemanticPipelineTests
             new OllamaRequirementSettings { Enabled = false });
 
         var query = Assert.Single(interpretations.SelectMany(i => i.GeneratedQueries));
-        Assert.Equal("E<> P_Calculator_Compute.Done", query.Formula);
+        Assert.Equal("A<> P_Calculator_Compute.Done", query.Formula);
     }
 
     [Fact]

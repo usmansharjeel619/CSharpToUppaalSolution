@@ -14,6 +14,8 @@ namespace CSharpToUppaal.Backend.Services
 {
     public interface IRequirementTranslationService
     {
+        Task<List<RequirementInterpretation>> InterpretEntriesAsync(IReadOnlyList<RequirementEntry> entries,
+            RequirementTranslationContext context, OllamaRequirementSettings settings, CancellationToken cancellationToken = default);
         Task<List<RequirementInterpretation>> InterpretAsync(
             string requirementsText,
             RequirementTranslationContext context,
@@ -23,6 +25,11 @@ namespace CSharpToUppaal.Backend.Services
 
     public class RequirementTranslationContext
     {
+        public bool IsGeneratedContext { get; set; }
+        public Dictionary<string, string> SymbolTypes { get; set; } = new(StringComparer.Ordinal);
+        public List<string> Locations { get; set; } = new();
+        public Dictionary<string, string> ProcessNames { get; set; } = new();
+        public string Process(FunctionDescriptor f) => ProcessNames.TryGetValue(f.Id, out var name) ? name : RequirementTranslationService.ProcessName(f);
         public List<FunctionDescriptor> Functions { get; set; } = new();
         public List<string> Variables { get; set; } = new();
         /// <summary>
@@ -44,6 +51,17 @@ namespace CSharpToUppaal.Backend.Services
         public string LastUsedSource { get; private set; } = "rules";
         public string LastError { get; private set; } = string.Empty;
 
+        public static RequirementEntry CreateGuidedRequirement(RequirementKind kind, string variable = "", string op = "", string value = "")
+            => new() { GuidedKind = kind, Variable = variable, Operator = op, Value = value,
+                Text = kind switch
+                {
+                    RequirementKind.DeadlockFreedom => "The generated model must be deadlock free.",
+                    RequirementKind.Safety => string.IsNullOrWhiteSpace(variable) ? "The system must always satisfy ..." : $"{variable} {op} {value}",
+                    RequirementKind.Reachability => "The system can eventually complete.",
+                    RequirementKind.Liveness => "The system will eventually complete.",
+                    _ => ""
+                } };
+
         public async Task<List<RequirementInterpretation>> InterpretAsync(
             string requirementsText,
             RequirementTranslationContext context,
@@ -51,24 +69,85 @@ namespace CSharpToUppaal.Backend.Services
             CancellationToken cancellationToken = default)
         {
             LastError = string.Empty;
-            var lines = SplitRequirements(requirementsText);
-            if (lines.Count == 0)
-                return new List<RequirementInterpretation>();
+            var lines = SplitRequirements(requirementsText)
+                .Select((text, index) => new RequirementEntry { Id = $"legacy-{index + 1}", Text = text })
+                .ToList();
+            return await InterpretEntriesAsync(lines, context, settings, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<List<RequirementInterpretation>> InterpretEntriesAsync(
+            IReadOnlyList<RequirementEntry> entries,
+            RequirementTranslationContext context,
+            OllamaRequirementSettings settings,
+            CancellationToken cancellationToken = default)
+        {
+            LastError = string.Empty;
+            var results = new List<RequirementInterpretation>();
+            foreach (var entry in entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (string.IsNullOrWhiteSpace(entry.Id) || entries.Count(e => e.Id == entry.Id) != 1)
+                {
+                    entry.Status = "Needs review: requirement IDs must be nonempty and unique";
+                    results.Add(new RequirementInterpretation { RequirementId = entry.Id, RequirementText = entry.Text, Status = entry.Status });
+                    continue;
+                }
+                if (!entry.IsActive || entry.ReferencedFunctionIds.Any(id => !context.Functions.Any(f => f.Id == id)) || (!string.IsNullOrEmpty(entry.FunctionId) && !context.Functions.Any(f => f.Id == entry.FunctionId)))
+                {
+                    entry.Status = "Inactive: outside selected scope";
+                    results.Add(new RequirementInterpretation { RequirementId = entry.Id, RequirementText = entry.Text, Status = entry.Status });
+                    continue;
+                }
+                RequirementInterpretation interpretation;
+                if (entry.GuidedKind.HasValue)
+                    interpretation = InterpretGuided(entry, context);
+                else
+                {
+                    var single = await InterpretFreeEntryAsync(entry, context, settings, cancellationToken).ConfigureAwait(false);
+                    interpretation = single;
+                }
+                foreach (var query in interpretation.GeneratedQueries.ToList())
+                {
+                    query.RequirementId = entry.Id;
+                    query.Name = $"Req_{entry.Id}_{interpretation.GeneratedQueries.IndexOf(query) + 1}";
+                    query.IsValidated = QueryValidationService.Validate(query.Formula, context, out var diagnostic);
+                    query.ValidationDiagnostics = diagnostic;
+                    query.Category = QueryValidationService.Category(query.Formula);
+                    if (!query.IsValidated)
+                    {
+                        interpretation.Status = "Needs review: " + diagnostic;
+                        interpretation.GeneratedQueries.Remove(query);
+                    }
+                }
+                if (interpretation.GeneratedQueries.Count > 0)
+                    entry.ReferencedFunctionIds = context.Functions.Where(f => interpretation.GeneratedQueries.Any(q => q.Formula.Contains(context.Process(f) + ".", StringComparison.Ordinal))).Select(f => f.Id).ToList();
+                entry.Status = interpretation.Status;
+                results.Add(interpretation);
+            }
+            return results;
+        }
+
+        private async Task<RequirementInterpretation> InterpretFreeEntryAsync(RequirementEntry entry, RequirementTranslationContext context,
+            OllamaRequirementSettings settings, CancellationToken cancellationToken)
+        {
+            var active = new List<RequirementEntry> { entry };
+            var lines = active.Select(e => e.Text.Trim()).ToList();
 
             if (settings.Enabled)
             {
                 try
                 {
-                    var ollama = await TryInterpretWithOllamaAsync(lines, context, settings, cancellationToken)
+                    var ollama = await TryInterpretWithOllamaAsync(active, context, settings, cancellationToken)
                         .ConfigureAwait(false);
-                    if (ollama.Count > 0)
+                    if (ollama.Count == 1 && ollama[0].RequirementId == entry.Id && ollama[0].GeneratedQueries.Count > 0)
                     {
                         LastUsedSource = "ollama";
-                        return ollama;
+                        return ollama[0];
                     }
 
                     LastError = "Ollama returned no results — falling back to rules.";
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
                     LastError = $"Ollama unavailable ({ex.Message}) — falling back to rules.";
@@ -76,11 +155,41 @@ namespace CSharpToUppaal.Backend.Services
             }
 
             LastUsedSource = "rules";
-            return lines.Select(line => InterpretWithRules(line, context)).ToList();
+            return InterpretWithRules(entry.Text, context, entry.Id);
+        }
+
+        private static RequirementInterpretation InterpretGuided(RequirementEntry e, RequirementTranslationContext context)
+        {
+            var result = new RequirementInterpretation { RequirementId = e.Id, RequirementText = e.Text, Kind = e.GuidedKind!.Value, Status = "Mapped from template" };
+            string predicate = e.Variable;
+            if (!string.IsNullOrWhiteSpace(e.Operator))
+            {
+                if (!new[] { "==", "!=", ">", ">=", "<", "<=" }.Contains(e.Operator))
+                { result.Status = "Needs review: select a comparison operator"; return result; }
+                predicate = $"{e.Variable} {e.Operator} {e.Value}";
+            }
+            if (e.Forbidden) predicate = $"not ({predicate})";
+            if (e.Scope == "On completion")
+            {
+                var f = context.Functions.FirstOrDefault(f => f.Id == e.FunctionId);
+                if (f == null) { result.Status = "Needs review: select the completion function"; return result; }
+                predicate = $"(not {context.Process(f)}.Done or ({predicate}))";
+            }
+            var formula = e.GuidedKind switch
+            {
+                RequirementKind.DeadlockFreedom => "A[] not deadlock",
+                RequirementKind.Safety => "A[] " + predicate,
+                RequirementKind.Reachability => "E<> " + predicate,
+                RequirementKind.Liveness => "A<> " + predicate,
+                RequirementKind.LeadsTo => $"{predicate} --> {e.Target}",
+                _ => ""
+            };
+            result.GeneratedQueries.Add(new GeneratedQuery { Formula = formula, Category = e.GuidedKind == RequirementKind.DeadlockFreedom ? RequirementKind.Sanity : e.GuidedKind.Value, Source = "template", Comment = e.Text });
+            return result;
         }
 
         private async Task<List<RequirementInterpretation>> TryInterpretWithOllamaAsync(
-            List<string> lines,
+            List<RequirementEntry> entries,
             RequirementTranslationContext context,
             OllamaRequirementSettings settings,
             CancellationToken cancellationToken)
@@ -103,32 +212,35 @@ namespace CSharpToUppaal.Backend.Services
                             type = "object",
                             properties = new
                             {
+                                id = new { type = "string" },
                                 text = new { type = "string" },
                                 kind = new { type = "string", @enum = new[] { "Reachability", "Safety", "Liveness", "LeadsTo", "DeadlockFreedom", "Unknown" } },
                                 formula = new { type = "string" },
                                 comment = new { type = "string" },
                                 confidence = new { type = "number" }
                             },
-                            required = new[] { "text", "kind", "formula", "comment", "confidence" }
+                            required = new[] { "id", "text", "kind", "formula", "comment", "confidence" }
                         }
                     }
                 },
                 required = new[] { "requirements" }
             };
 
+            var lines = entries.Select(e => e.Text).ToList();
             var prompt = new StringBuilder();
             prompt.AppendLine("Translate each design requirement into an executable UPPAAL symbolic query.");
             prompt.AppendLine("Allowed forms: A[] predicate, E<> predicate, A<> predicate, E[] predicate, or trigger --> target.");
             prompt.AppendLine("Use only known process/location names and variables. If not mappable, return kind Unknown and an empty formula.");
             prompt.AppendLine("Known functions/processes:");
             foreach (var function in context.Functions)
-                prompt.AppendLine($"- {function.DisplayName}, process {ProcessName(function)}, done location {ProcessName(function)}.Done");
+                prompt.AppendLine($"- {function.Signature}, process {context.Process(function)}, done location {context.Process(function)}.Done");
             prompt.AppendLine("Known variables:");
-            foreach (var variable in context.Variables.Distinct(StringComparer.Ordinal))
-                prompt.AppendLine($"- {Sanitize(variable)}");
+            foreach (var variable in context.SymbolTypes)
+                prompt.AppendLine($"- {variable.Key} ({variable.Value})");
+            prompt.AppendLine("Preserve exactly the supplied id. Never invent identifiers or weaken always/eventually to possible reachability.");
             prompt.AppendLine("Requirements:");
-            foreach (var line in lines)
-                prompt.AppendLine($"- {line}");
+            foreach (var entry in entries)
+                prompt.AppendLine($"- id={entry.Id}: {entry.Text}");
 
             var payload = new
             {
@@ -176,6 +288,7 @@ namespace CSharpToUppaal.Backend.Services
             var results = new List<RequirementInterpretation>();
             foreach (var node in requirementNodes)
             {
+                var id = node?["id"]?.GetValue<string>() ?? string.Empty;
                 var text = node?["text"]?.GetValue<string>() ?? string.Empty;
                 var kindText = node?["kind"]?.GetValue<string>() ?? "Unknown";
                 var formula = node?["formula"]?.GetValue<string>() ?? string.Empty;
@@ -184,17 +297,22 @@ namespace CSharpToUppaal.Backend.Services
 
                 var interpretation = new RequirementInterpretation
                 {
+                    RequirementId = id,
                     RequirementText = text,
                     Kind = Enum.TryParse<RequirementKind>(kindText, out var kind) ? kind : RequirementKind.Unknown,
                     Confidence = confidence,
                     Status = ValidateFormula(formula, context) ? "Mapped" : "Needs review"
                 };
+                if (string.IsNullOrWhiteSpace(id) || !entries.Any(e => e.Id == id))
+                    interpretation.Status = "Needs review: unknown requirement id";
 
                 if (!string.IsNullOrWhiteSpace(formula) && interpretation.Status == "Mapped")
                 {
                     var queryName = BuildQueryName(text, results.Count + 1);
                     interpretation.GeneratedQueries.Add(new GeneratedQuery
                     {
+                        RequirementId = id,
+                        Category = interpretation.Kind,
                         Name = queryName,
                         Formula = formula,
                         Comment = string.IsNullOrWhiteSpace(comment) ? text : comment,
@@ -210,22 +328,25 @@ namespace CSharpToUppaal.Backend.Services
             return results;
         }
 
-        private static RequirementInterpretation InterpretWithRules(string requirement, RequirementTranslationContext context)
+        private static RequirementInterpretation InterpretWithRules(string requirement, RequirementTranslationContext context, string requirementId = "")
         {
             var lower = requirement.ToLowerInvariant();
             var interpretation = new RequirementInterpretation
             {
                 RequirementText = requirement,
+                RequirementId = requirementId,
                 Confidence = 0.65,
                 Status = "Mapped by rules"
             };
 
-            if (lower.Contains("deadlock", StringComparison.Ordinal))
+            if (Regex.IsMatch(lower, @"\b(deadlock[- ]free|no deadlock|never deadlock|absence of deadlock|not deadlock)\b"))
             {
                 interpretation.Kind = RequirementKind.DeadlockFreedom;
                 interpretation.GeneratedQueries.Add(new GeneratedQuery
                 {
-                    Name = "Req_NoDeadlock",
+                        Name = "Req_NoDeadlock",
+                        RequirementId = requirementId,
+                        Category = interpretation.Kind,
                     Formula = "A[] not deadlock",
                     Comment = requirement,
                     Source = "rules"
@@ -233,37 +354,43 @@ namespace CSharpToUppaal.Backend.Services
                 return interpretation;
             }
 
-            var matchedFunction = context.Functions.FirstOrDefault(f =>
-                lower.Contains(f.Name.ToLowerInvariant(), StringComparison.Ordinal)
-                || lower.Contains(f.DisplayName.ToLowerInvariant(), StringComparison.Ordinal));
+            var qualifiedMatches = context.Functions.Where(f => requirement.Contains(f.Signature, StringComparison.OrdinalIgnoreCase) || requirement.Contains(f.DisplayName, StringComparison.OrdinalIgnoreCase)).ToList();
+            var matches = qualifiedMatches.Count == 1 ? qualifiedMatches : context.Functions.Where(f => Regex.IsMatch(requirement, $@"(?<!\w){Regex.Escape(f.Name)}(?!\w)", RegexOptions.IgnoreCase)).ToList();
+            var matchedFunction = matches.Count == 1 ? matches[0] : null;
 
             if (matchedFunction != null && (lower.Contains("eventually", StringComparison.Ordinal)
                                             || lower.Contains("reach", StringComparison.Ordinal)
                                             || lower.Contains("complete", StringComparison.Ordinal)
                                             || lower.Contains("finish", StringComparison.Ordinal)))
             {
-                interpretation.Kind = RequirementKind.Reachability;
+                interpretation.Kind = lower.Contains("can ") || lower.Contains("possible") || lower.Contains("reach")
+                    ? RequirementKind.Reachability : RequirementKind.Liveness;
                 interpretation.GeneratedQueries.Add(new GeneratedQuery
                 {
                     Name = $"Req_Reach_{Sanitize(matchedFunction.Name)}",
-                    Formula = $"E<> {ProcessName(matchedFunction)}.Done",
+                    Formula = $"{(interpretation.Kind == RequirementKind.Reachability ? "E<>" : "A<>")} {context.Process(matchedFunction)}.Done",
+                    RequirementId = requirementId,
+                    Category = interpretation.Kind,
                     Comment = requirement,
                     Source = "rules"
                 });
                 return interpretation;
             }
 
-            var predicate = ExtractPredicate(requirement, context);
+            var predicateText = Regex.Replace(requirement, @"^\s*(always|eventually|possibly)\s+", "", RegexOptions.IgnoreCase);
+            var predicate = ExtractPredicate(predicateText, context);
             if (!string.IsNullOrWhiteSpace(predicate))
             {
-                interpretation.Kind = lower.Contains("eventually", StringComparison.Ordinal)
+                interpretation.Kind = lower.StartsWith("possibly", StringComparison.Ordinal) ? RequirementKind.Reachability : lower.Contains("eventually", StringComparison.Ordinal)
                     ? RequirementKind.Liveness
                     : RequirementKind.Safety;
                 interpretation.Predicate = predicate;
                 interpretation.GeneratedQueries.Add(new GeneratedQuery
                 {
-                    Name = $"Req_{interpretation.Kind}",
-                    Formula = interpretation.Kind == RequirementKind.Liveness ? $"A<> {predicate}" : $"A[] {predicate}",
+                        Name = $"Req_{interpretation.Kind}",
+                        RequirementId = requirementId,
+                        Category = interpretation.Kind,
+                    Formula = interpretation.Kind == RequirementKind.Liveness ? $"A<> {predicate}" : interpretation.Kind == RequirementKind.Reachability ? $"E<> {predicate}" : $"A[] {predicate}",
                     Comment = requirement,
                     Source = "rules"
                 });
@@ -272,7 +399,7 @@ namespace CSharpToUppaal.Backend.Services
 
             interpretation.Kind = RequirementKind.Unknown;
             interpretation.Confidence = 0.1;
-            interpretation.Status = "Needs review";
+            interpretation.Status = "Needs review: use a guided template or an unambiguous qualified symbol and supported comparison.";
             return interpretation;
         }
 
@@ -362,30 +489,8 @@ namespace CSharpToUppaal.Backend.Services
         }
 
         private static bool ValidateFormula(string formula, RequirementTranslationContext context)
-        {
-            if (string.IsNullOrWhiteSpace(formula))
-                return false;
+            => QueryValidationService.Validate(formula, context, out _);
 
-            var normalized = formula.Trim();
-            if (normalized.Equals("A[] not deadlock", StringComparison.Ordinal))
-                return true;
-
-            // Reject natural-language text even when it contains a valid variable name.
-            if (Regex.IsMatch(normalized, @"\b(must|should|greater than|less than|equal to)\b", RegexOptions.IgnoreCase))
-                return false;
-
-            var queryMatch = Regex.Match(normalized, @"^(?:A\[\]|E<>|A<>|E\[\])\s+(.+)$");
-            var leadsToMatch = Regex.Match(normalized, @"^(.+)\s+-->\s+(.+)$");
-            if (!queryMatch.Success && !leadsToMatch.Success)
-                return false;
-
-            if (!Regex.IsMatch(normalized, @"(?:==|!=|>=|<=|(?<!-)>(?!>)|(?<!<)<(?!<)|\.Done\b|\btrue\b|\bfalse\b)"))
-                return false;
-
-            return context.Functions.Any(function => normalized.Contains(ProcessName(function), StringComparison.Ordinal))
-                || context.VariableReferences.Values.Any(reference => normalized.Contains(reference, StringComparison.Ordinal))
-                || context.Variables.Any(variable => normalized.Contains(Sanitize(variable), StringComparison.Ordinal));
-        }
 
         private static List<string> SplitRequirements(string requirementsText)
         {

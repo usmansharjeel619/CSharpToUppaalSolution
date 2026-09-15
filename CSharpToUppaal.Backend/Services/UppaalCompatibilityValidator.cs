@@ -222,16 +222,9 @@ namespace CSharpToUppaal.Backend.Services
                     Add(result, UppaalCompatibilitySeverity.Warning, "Query", formula, $"Query '{formula}' is not one of the supported UPPAAL symbolic query forms.");
                 }
 
-                foreach (Match reference in Regex.Matches(formula, @"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b"))
-                {
-                    var templateName = reference.Groups[1].Value;
-                    var locationName = reference.Groups[2].Value;
-                    if (locationsByTemplate.TryGetValue(templateName, out var locations) && !locations.Contains(locationName))
-                    {
-                        Add(result, UppaalCompatibilitySeverity.Error, "Query", formula,
-                            $"Query references location '{templateName}.{locationName}', but that location does not exist in the generated template.");
-                    }
-                }
+                var context = QueryValidationService.FromXml(nta.ToString());
+                if (!QueryValidationService.Validate(formula, context, out var diagnostic))
+                    Add(result, UppaalCompatibilitySeverity.Error, "Query", formula, diagnostic);
             }
         }
 

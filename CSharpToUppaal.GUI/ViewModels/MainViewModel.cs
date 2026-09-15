@@ -133,6 +133,8 @@ namespace BankSystem
         [ObservableProperty]
         private string _requirementsText = "The generated model must be deadlock free.";
 
+        public ObservableCollection<RequirementEntry> RequirementEntries { get; } = new();
+
         [ObservableProperty]
         private ObservableCollection<FunctionSelectionViewModel> _functionSelections = new();
 
@@ -144,6 +146,12 @@ namespace BankSystem
 
         [ObservableProperty]
         private FunctionSelectionViewModel _selectedIdentifiedFunction;
+
+        [ObservableProperty]
+        private bool _singleFunctionMode;
+
+        [ObservableProperty]
+        private FunctionSelectionViewModel _selectedEntryFunction;
 
         [ObservableProperty]
         private ObservableCollection<TranslationAssumption> _assumptions = new();
@@ -220,12 +228,26 @@ namespace BankSystem
             _settings = AppSettingsService.Load();
             _engine = new CSharpToUppaal.Backend.CSharpToUppaalEngine();
             UpdateSettingsSummary();
+            InitializeRequirements();
 
             // Test: Add a dummy method to verify binding works
             Console.WriteLine("MainViewModel constructor called");
             Console.WriteLine($"Methods collection initialized: {Methods != null}");
 
             LoadSampleProject();
+            RequirementEntries.Add(new RequirementEntry { Text = RequirementsText });
+        }
+
+        [RelayCommand]
+        private void AddRequirement() => RequirementEntries.Add(new RequirementEntry { Text = string.Empty });
+
+        [RelayCommand]
+        private void AddDeadlockRequirement() => RequirementEntries.Add(RequirementTranslationService.CreateGuidedRequirement(RequirementKind.DeadlockFreedom));
+
+        [RelayCommand]
+        private void RemoveRequirement(RequirementEntry entry)
+        {
+            if (entry != null) RequirementEntries.Remove(entry);
         }
 
         public void SetCfgCanvas(Canvas canvas)
@@ -1070,6 +1092,7 @@ namespace BankSystem
 
         private async Task RefreshSemanticFunctionListAsync()
         {
+            var entryId = SelectedEntryFunction?.FunctionId;
             FunctionSelections.Clear();
             ModelFunctionSelections.Clear();
             IdentifiedFunctionSelections.Clear();
@@ -1130,6 +1153,8 @@ namespace BankSystem
             }
 
             _latestSemanticAnalysis = analysis;
+            if (entryId != null) SelectedEntryFunction = FunctionSelections.FirstOrDefault(f => f.FunctionId == entryId);
+            _sourceDirty = false;
             RecomputeFunctionScope();
             StatusMessage = $"Semantic analysis found {FunctionSelections.Count} function(s): {ModelFunctionSelections.Count} in the UPPAAL model, {IdentifiedFunctionSelections.Count} identified only" +
                             (IsWorkspaceProject ? " in the selected project" : string.Empty);
@@ -1137,6 +1162,8 @@ namespace BankSystem
 
         private void RecomputeFunctionScope()
         {
+            InvalidateModel();
+            GeneratedQueries.Clear();
             var analysis = _workspaceAnalysis ?? _latestSemanticAnalysis;
             var includedIds = new HashSet<string>(StringComparer.Ordinal);
             var requiredBy = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -1161,10 +1188,11 @@ namespace BankSystem
             {
                 if (includedIds.Contains(function.FunctionId))
                 {
-                    function.Scope = function.IsSelected
+                    var isEntry = SingleFunctionMode ? function.FunctionId == SelectedEntryFunction?.FunctionId : function.IsSelected;
+                    function.Scope = isEntry
                         ? FunctionScopeState.EntryPoint
                         : FunctionScopeState.IncludedDependency;
-                    function.InclusionReason = function.IsSelected
+                    function.InclusionReason = isEntry
                         ? function.EntryPointReason
                         : requiredBy.TryGetValue(function.FunctionId, out var caller)
                             ? $"Required by {caller}"
@@ -1184,18 +1212,22 @@ namespace BankSystem
             if (SelectedIdentifiedFunction != null && !IdentifiedFunctionSelections.Contains(SelectedIdentifiedFunction))
                 SelectedIdentifiedFunction = null;
             RefreshSelectedMethods();
+            var activeFunctionIds = ModelFunctionSelections.Select(f => f.FunctionId).ToHashSet();
+            foreach (var entry in RequirementEntries)
+                if (entry.ReferencedFunctionIds.Any(id => !activeFunctionIds.Contains(id)) || (entry.FunctionId.Length > 0 && !activeFunctionIds.Contains(entry.FunctionId)))
+                { entry.Status = "Inactive: outside selected scope"; RemoveEntryQueries(entry.Id); }
+            var activeSignatures = ModelFunctionSelections.Select(f => f.Signature).ToHashSet();
+            foreach (var domain in Domains.Where(d => d.InferenceStatus != "User override" || !activeSignatures.Contains(d.OwnerFunction)).ToList()) Domains.Remove(domain);
         }
 
         private void RefreshSelectedMethods()
         {
-            var selectedNames = ModelFunctionSelections
-                .Select(f => f.Function.Name)
-                .ToHashSet(StringComparer.Ordinal);
+            var selectedFunctions = ModelFunctionSelections.Select(f => f.Function).ToList();
 
             SelectedMethods.Clear();
             foreach (var method in Methods)
             {
-                if (selectedNames.Contains(method.Name))
+                if (selectedFunctions.Any(f => f.Name == method.Name && f.LineNumber == method.LineNumber))
                     SelectedMethods.Add(method);
             }
 
@@ -1205,6 +1237,8 @@ namespace BankSystem
 
         private List<FunctionSelection> BuildFunctionSelections()
         {
+            if (SingleFunctionMode)
+                return FunctionSelections.Select(f => new FunctionSelection { FunctionId = f.FunctionId, IsSelected = f.FunctionId == SelectedEntryFunction?.FunctionId, Mode = FunctionModelingMode.ExplicitAutomaton }).ToList();
             return FunctionSelections.Select(f => new FunctionSelection
             {
                 FunctionId = f.FunctionId,
@@ -1228,6 +1262,7 @@ namespace BankSystem
 
             foreach (var query in model.GenerationReport.Queries)
                 GeneratedQueries.Add(query);
+            if (!string.IsNullOrWhiteSpace(model.XmlContent)) UpdateRequirementContext(model);
 
             ApplyCompatibilityReport(model.GenerationReport.Compatibility);
             GenerationReportText = model.GenerationReport.Summary;
@@ -1854,6 +1889,9 @@ namespace BankSystem
                 if (openFileDialog.ShowDialog() == true)
                 {
                     RequirementsText = await System.IO.File.ReadAllTextAsync(openFileDialog.FileName);
+                    RequirementEntries.Clear();
+                    foreach (var line in RequirementsText.Split(new[] { "\r\n", "\n", ";" }, StringSplitOptions.RemoveEmptyEntries))
+                        RequirementEntries.Add(new RequirementEntry { Text = line.Trim().TrimStart('-', '*').Trim() });
                     StatusMessage = $"Requirements loaded from {IOPath.GetFileName(openFileDialog.FileName)}";
                 }
             }
@@ -1870,6 +1908,12 @@ namespace BankSystem
         {
             try
             {
+                if (_geometryStale || _lastModel == null)
+                {
+                    await GenerateModel();
+                    if (_geometryStale || _lastModel == null) return;
+                    return; // Generation interprets the same entries against its emitted context.
+                }
                 if (FunctionSelections.Count == 0)
                     await RefreshSemanticFunctionListAsync();
 
@@ -1877,25 +1921,12 @@ namespace BankSystem
                 StatusMessage = "Interpreting requirements...";
 
                 var service = new RequirementTranslationService();
-                var context = new RequirementTranslationContext
-                {
-                Functions = ModelFunctionSelections.Select(f => f.Function).ToList(),
-                    Variables = Domains.Select(d => d.Name.Split('.').Last()).Distinct().ToList(),
-                    VariableReferences = BuildUppaalVariableReferences()
-                };
-
-                context.Variables = context.Variables
-                    .Concat(context.Functions.SelectMany(CollectFunctionVariableNames))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
+                var context = QueryValidationService.FromModel(_lastModel);
 
                 var settings = _settings.ToRequirementSettings();
-                var interpretations = await service.InterpretAsync(
-                    RequirementsText,
-                    context,
-                    settings);
+                var interpretations = await service.InterpretEntriesAsync(RequirementEntries, context, settings);
 
-                GeneratedQueries.Clear();
+                foreach (var entry in RequirementEntries) RemoveEntryQueries(entry.Id);
                 foreach (var query in interpretations.SelectMany(i => i.GeneratedQueries))
                     GeneratedQueries.Add(query);
 
@@ -1921,48 +1952,6 @@ namespace BankSystem
             }
         }
 
-        private Dictionary<string, string> BuildUppaalVariableReferences()
-        {
-            var references = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var domain in Domains)
-            {
-                var separator = domain.Name.LastIndexOf('.');
-                if (separator <= 0 || separator >= domain.Name.Length - 1)
-                    continue;
-
-                var functionDisplayName = domain.Name[..separator];
-                var variable = domain.Name[(separator + 1)..];
-                var function = ModelFunctionSelections
-                    .Select(selection => selection.Function)
-                    .FirstOrDefault(candidate => candidate.DisplayName.Equals(functionDisplayName, StringComparison.Ordinal));
-
-                if (function != null && !references.ContainsKey(variable))
-                    references[variable] = $"{RequirementTranslationService.ProcessName(function)}.{RequirementTranslationService.Sanitize(variable)}";
-            }
-
-            // Requirements can be interpreted before the model has been generated.
-            // In that case there are no domain rows yet, so derive valid template-local
-            // references from the semantic function bodies.
-            foreach (var function in ModelFunctionSelections.Select(selection => selection.Function))
-            {
-                foreach (var variable in CollectFunctionVariableNames(function))
-                {
-                    if (!references.ContainsKey(variable))
-                        references[variable] = $"{RequirementTranslationService.ProcessName(function)}.{RequirementTranslationService.Sanitize(variable)}";
-                }
-            }
-
-            return references;
-        }
-
-        private static IEnumerable<string> CollectFunctionVariableNames(FunctionDescriptor function)
-        {
-            foreach (var parameter in function.Parameters)
-                yield return parameter.Name;
-
-            foreach (Match match in LocalVariableDeclarationPattern.Matches(function.Body ?? string.Empty))
-                yield return match.Groups[1].Value;
-        }
 
         [RelayCommand]
         private async Task GenerateCfg()
@@ -2001,8 +1990,11 @@ namespace BankSystem
                 IsBusy = true;
                 StatusMessage = "Generating UPPAAL model...";
 
-                if (FunctionSelections.Count == 0)
+                if (FunctionSelections.Count == 0 || _sourceDirty)
+                {
                     await RefreshSemanticFunctionListAsync();
+                    _sourceDirty = false;
+                }
 
                 if (ModelFunctionSelections.Count == 0)
                 {
@@ -2017,9 +2009,12 @@ namespace BankSystem
                     SourceCode = SourceCode,
                     FileName = _project.SourceFiles.FirstOrDefault()?.FilePath ?? "Source.cs",
                     FunctionSelections = BuildFunctionSelections(),
-                    DomainOverrides = Domains.ToList(),
-                    UserQueries = GeneratedQueries.ToList(),
-                    RequirementsText = GeneratedQueries.Count == 0 ? RequirementsText : string.Empty,
+                    SingleFunctionMode = SingleFunctionMode,
+                    SelectedEntryFunctionId = SelectedEntryFunction?.Function.Id ?? string.Empty,
+                    DomainOverrides = Domains.Where(d => d.InferenceStatus == "User override").ToList(),
+                    UserQueries = GeneratedQueries.Where(q => q.Source == "manual" && q.RequirementId.Length == 0).ToList(),
+                    RequirementsText = string.Empty,
+                    Requirements = RequirementEntries.ToList(),
                     RequirementSettings = _settings.ToRequirementSettings()
                 };
 
@@ -2038,8 +2033,8 @@ namespace BankSystem
                     request.ExternalStubAssumptionsConfirmed = true;
                 }
 
-                var model = IsWorkspaceProject && _workspaceAnalysis != null
-                    ? await _engine.GenerateModelAsync(_workspaceAnalysis, request)
+                var model = (_workspaceAnalysis ?? _latestSemanticAnalysis) != null
+                    ? await _engine.GenerateModelAsync(_workspaceAnalysis ?? _latestSemanticAnalysis, request)
                     : await _engine.GenerateModelAsync(request);
                 if (!string.IsNullOrWhiteSpace(model.XmlContent))
                 {
@@ -2102,6 +2097,7 @@ namespace BankSystem
                     return;
                 }
 
+                SynchronizeQueriesForExport();
                 var compatibility = ValidateCurrentXmlForExport();
                 if (!compatibility.IsReady)
                 {

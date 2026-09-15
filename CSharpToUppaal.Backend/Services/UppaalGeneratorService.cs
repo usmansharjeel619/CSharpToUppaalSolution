@@ -92,6 +92,14 @@ namespace CSharpToUppaal.Backend.Services
                 }
 
                 var selections = NormalizeSelections(analysis.Functions, request.FunctionSelections);
+                if (request.SingleFunctionMode && !string.IsNullOrWhiteSpace(request.SelectedEntryFunctionId))
+                {
+                    var selected = analysis.Functions.FirstOrDefault(f => f.Id == request.SelectedEntryFunctionId);
+                    if (selected != null)
+                        selections = new List<FunctionSelection> { new() { FunctionId = selected.Id, IsSelected = true, Mode = FunctionModelingMode.ExplicitAutomaton } };
+                    else throw new InvalidOperationException("The selected entry function no longer exists. Select a function again.");
+                }
+                else if (request.SingleFunctionMode) throw new InvalidOperationException("Select an entry function for single-function scope.");
                 var included = analysis.ResolveClosure(selections);
                 var externalCalls = included.SelectMany(function => function.UnresolvedCalls)
                     .Distinct(StringComparer.Ordinal).OrderBy(call => call, StringComparer.Ordinal).ToList();
@@ -105,12 +113,20 @@ namespace CSharpToUppaal.Backend.Services
                         reviewedStubCalls, "ExternalStubReview");
                 }
 
-                var requirementQueries = await InterpretRequirementsAsync(request, analysis).ConfigureAwait(false);
                 var builder = new SemanticUppaalBuilder(analysis, selections, included, request.DomainOverrides);
-                var model = builder.Build(request.ProjectName, requirementQueries.Concat(request.UserQueries).ToList());
+                var model = builder.Build(request.ProjectName, new List<GeneratedQuery>());
 
-                model.GenerationReport.Functions = analysis.Functions;
+                model.GenerationReport.Functions = included.ToList();
                 model.GenerationReport.IncludedFunctions = included.ToList();
+                var context = QueryValidationService.FromModel(model);
+                var service = new RequirementTranslationService();
+                var interpretations = request.Requirements.Count > 0
+                    ? await service.InterpretEntriesAsync(request.Requirements, context, request.RequirementSettings).ConfigureAwait(false)
+                    : await service.InterpretAsync(request.RequirementsText, context, request.RequirementSettings).ConfigureAwait(false);
+                model.GenerationReport.Interpretations = interpretations;
+                model.GenerationReport.Queries.AddRange(interpretations.SelectMany(i => i.GeneratedQueries));
+                model.GenerationReport.Queries.AddRange(request.UserQueries.Where(q => q.Source == "manual"));
+                model.XmlContent = QueryValidationService.ApplyQueries(model.XmlContent, model.GenerationReport.Queries);
                 model.GenerationReport.Assumptions.InsertRange(0, analysis.Assumptions);
                 foreach (var externalCall in externalCalls)
                 {
@@ -245,26 +261,6 @@ namespace CSharpToUppaal.Backend.Services
             }
         };
 
-        private async Task<List<GeneratedQuery>> InterpretRequirementsAsync(ModelGenerationRequest request, CSharpSemanticAnalysisResult analysis)
-        {
-            var queries = new List<GeneratedQuery>();
-            if (string.IsNullOrWhiteSpace(request.RequirementsText))
-                return queries;
-
-            var service = new RequirementTranslationService();
-            var context = new RequirementTranslationContext
-            {
-                Functions = analysis.Functions,
-                Variables = analysis.GetVariableDeclarators().Select(v => v.Identifier.Text).Distinct().ToList()
-            };
-
-            var interpretations = await service
-                .InterpretAsync(request.RequirementsText, context, request.RequirementSettings)
-                .ConfigureAwait(false);
-
-            queries.AddRange(interpretations.SelectMany(i => i.GeneratedQueries));
-            return queries;
-        }
 
         private static List<FunctionSelection> NormalizeSelections(IReadOnlyList<FunctionDescriptor> functions, List<FunctionSelection> requested)
         {
@@ -432,11 +428,23 @@ namespace CSharpToUppaal.Backend.Services
                     .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
                 _functionById = analysis.Functions.ToDictionary(f => f.Id, StringComparer.Ordinal);
                 _methodById = analysis.MethodDeclarationsById;
-
-                foreach (var domain in domainOverrides)
+                var selected = included.Where(f => _selectionById.TryGetValue(f.Id, out var s) && s.IsSelected).ToList();
+                var called = selected.SelectMany(f => f.DirectCallIds).ToHashSet();
+                var roots = selected.Where(f => !called.Contains(f.Id)).ToList();
+                var inferred = new SourceDomainAnalyzer(analysis, included, selections).Analyze(roots);
+                foreach (var domain in inferred)
                 {
-                    if (!string.IsNullOrWhiteSpace(domain.Name))
-                        _domains[domain.Name] = domain;
+                    var requested = domainOverrides.FirstOrDefault(d => d.SymbolId == domain.SymbolId && d.InferenceStatus == "User override");
+                    if (requested != null)
+                    {
+                        if (requested.Min > requested.Max) throw new InvalidOperationException($"Invalid bounds for {domain.Name}: minimum exceeds maximum.");
+                        if (domain.SourceMin < requested.Min || domain.SourceMax > requested.Max)
+                            _assumptions.Add(new TranslationAssumption { Severity = AssumptionSeverity.Warning, Category = "DomainOverride", SymbolName = domain.Name, Message = "User bounds exclude source-derived values; verification is conditional on this abstraction." });
+                        domain.Min = requested.Min; domain.Max = requested.Max; domain.InferenceStatus = "User override";
+                    }
+                    if (domain.InferenceStatus == "Assumed")
+                        _assumptions.Add(new TranslationAssumption { Severity = AssumptionSeverity.Warning, Category = "VariableDomain", SymbolName = domain.Name, Location = domain.SourceEvidence, Message = "No finite source range established. Using editable assumed bounds.", IsUserEditable = true });
+                    _domains[domain.SymbolId] = domain;
                 }
             }
 
@@ -452,6 +460,19 @@ namespace CSharpToUppaal.Backend.Services
                 globalDeclaration.AppendLine("// Generated by CSharpToUppaal semantic pipeline");
                 globalDeclaration.AppendLine("// Unknowns are represented as finite bounded choices and listed in assumptions.");
                 globalDeclaration.AppendLine();
+
+                var fields = _included.Where(f => _methodById.ContainsKey(f.Id))
+                    .SelectMany(f => _methodById[f.Id].DescendantNodes().OfType<ExpressionSyntax>())
+                    .Select(e => _analysis.GetSemanticModel(e).GetSymbolInfo(e).Symbol).OfType<IFieldSymbol>()
+                    .Where(f => f.DeclaringSyntaxReferences.Length > 0).Distinct<IFieldSymbol>(SymbolEqualityComparer.Default);
+                foreach (var field in fields)
+                {
+                    var declaration = field.DeclaringSyntaxReferences[0].GetSyntax() as VariableDeclaratorSyntax;
+                    var name = FieldName(field);
+                    var constant = declaration?.Initializer == null ? default : _analysis.GetSemanticModel(declaration).GetConstantValue(declaration.Initializer.Value);
+                    var initial = constant.HasValue && constant.Value is bool flag ? flag ? "true" : "false" : constant.HasValue && constant.Value is int number ? number.ToString() : DefaultValue(field.Type.ToDisplayString());
+                    globalDeclaration.AppendLine($"{MapType(field.Type.ToDisplayString())} {name} = {initial};");
+                }
 
                 var functions = GetDependencyFirstFunctions();
                 foreach (var function in functions)
@@ -495,6 +516,7 @@ namespace CSharpToUppaal.Backend.Services
                         Formula = $"E<> {templateName}.Done",
                         Comment = $"Reachability: {templateName} can finish.",
                         Source = "auto"
+                        ,Category = RequirementKind.Reachability
                     });
                 }
 
@@ -507,9 +529,10 @@ namespace CSharpToUppaal.Backend.Services
                     model.Templates.Add(driverTemplate);
                     _queries.Add(new GeneratedQuery
                     {
-                        Name = "Reach_Driver_AllDone",
+                        Name = "Sanity_DriverCycleComplete",
                         Formula = $"E<> {driverTemplate.Name}.DriverDone",
-                        Comment = "All processes have been sequenced through at least once by the driver.",
+                        Comment = "The selected entry point invocation can complete one driver cycle.",
+                        Category = RequirementKind.Sanity,
                         Source = "auto"
                     });
                 }
@@ -520,12 +543,15 @@ namespace CSharpToUppaal.Backend.Services
                     Formula = "A[] not deadlock",
                     Comment = "Verify that the system is deadlock-free.",
                     Source = "auto"
+                    ,Category = RequirementKind.Sanity
                 });
                 _queries.AddRange(requirementQueries.Where(q => !string.IsNullOrWhiteSpace(q.Formula)));
 
                 model.GenerationReport.Assumptions = _assumptions;
                 model.GenerationReport.Domains = _domains.Values.OrderBy(d => d.Name, StringComparer.Ordinal).ToList();
                 model.GenerationReport.Queries = _queries;
+                model.GenerationReport.ProcessNames = new Dictionary<string, string>(_templateNames);
+                AddSourceQueries(model);
                 model.XmlContent = SerializeModel(model.Name, globalDeclaration.ToString(), model.Templates, _queries);
                 return model;
             }
@@ -690,7 +716,7 @@ namespace CSharpToUppaal.Backend.Services
                 foreach (var parameter in function.Parameters)
                 {
                     var domain = GetDomain(function, parameter.Name, parameter.Type, "parameter");
-                    template.Declarations.AppendLine($"{MapType(parameter.Type)} {Sanitize(parameter.Name)} = {domain.DefaultValue()};");
+                    template.Declarations.AppendLine($"{MapType(parameter.Type)} {ParameterName(parameter.Name)} = {domain.DefaultValue()};");
                 }
 
                 if (!function.ReturnType.Equals("void", StringComparison.OrdinalIgnoreCase))
@@ -701,22 +727,25 @@ namespace CSharpToUppaal.Backend.Services
 
                 if (method != null && mode != FunctionModelingMode.Stub)
                 {
-                    foreach (var local in CollectLocalVariables(method)
-                        .Where(v => function.Parameters.All(p => !p.Name.Equals(v.name, StringComparison.Ordinal)))
-                        .GroupBy(v => Sanitize(v.name), StringComparer.Ordinal)
-                        .Select(g => g.First()))
+                    foreach (var local in method.DescendantNodes().OfType<VariableDeclaratorSyntax>())
                     {
-                        var isBool = local.type.Trim().Equals("bool", StringComparison.OrdinalIgnoreCase)
-                                  || local.type.Trim().Equals("Boolean", StringComparison.OrdinalIgnoreCase);
+                        var symbol = _analysis.GetSemanticModel(local).GetDeclaredSymbol(local) as ILocalSymbol;
+                        if (symbol == null) continue;
+                        var type = symbol.Type.ToDisplayString();
+                        var isBool = type == "bool";
                         var defaultVal = isBool ? "false" : "0";
-                        template.Declarations.AppendLine($"{MapType(local.type)} {Sanitize(local.name)} = {defaultVal};");
+                        var name = SymbolName(local);
+                        var domain = _domains.GetValueOrDefault(SourceDomainAnalyzer.SymbolKey(symbol));
+                        var mappedType = domain?.InferenceStatus == "User override" ? domain.ToUppaalDeclType() : MapType(type);
+                        if (domain?.InferenceStatus == "User override") defaultVal = domain.DefaultValue();
+                        template.Declarations.AppendLine($"{mappedType} {name} = {defaultVal};");
                     }
                 }
 
                 var waiting = template.AddLocation("Waiting", initial: true);
                 var entryLocId = template.AddLocation("Entry");
                 var parameterCopies = function.Parameters
-                    .Select(p => $"{Sanitize(p.Name)} = {contract.ArgumentVariables[p.Name]}");
+                    .Select(p => $"{ParameterName(p.Name)} = {contract.ArgumentVariables[p.Name]}");
                 template.AddTransition(waiting, entryLocId,
                     update: string.Join(", ", parameterCopies),
                     synchronization: $"{contract.CallChannel}?");
@@ -826,21 +855,25 @@ namespace CSharpToUppaal.Backend.Services
             private VariableDomain GetDomain(FunctionDescriptor function, string variableName, string type, string source)
             {
                 var qualified = $"{function.DisplayName}.{variableName}";
-                if (_domains.TryGetValue(qualified, out var overrideDomain))
-                    return overrideDomain;
-                if (_domains.TryGetValue(variableName, out overrideDomain))
-                    return overrideDomain;
+                var isReturn = source is "return" or "call result" or "stub return";
+                var existing = isReturn ? _domains.GetValueOrDefault(function.Id + ":return") : _domains.Values.FirstOrDefault(d => d.OwnerFunction == function.Signature && d.Name == qualified && d.Source != "return");
+                if (existing != null) return existing;
 
                 var isBool = type.Equals("bool", StringComparison.OrdinalIgnoreCase)
                           || type.Equals("Boolean", StringComparison.OrdinalIgnoreCase);
 
                 int min = -10, max = 10;
-                if (!isBool && _methodById.TryGetValue(function.Id, out var method))
-                    (min, max) = InferIntRange(method, variableName);
 
                 var domain = new VariableDomain
                 {
                     Name = qualified,
+                    SymbolId = $"{function.Id}:{variableName}",
+                    OwnerNamespace = function.Namespace,
+                    OwnerType = function.ContainingType,
+                    OwnerFunction = function.Signature,
+                    SourceEvidence = $"{function.SourceFile}:{function.LineNumber}",
+                    InferenceStatus = isBool ? "Source-derived" : "Assumed",
+                    CodeScope = "Generated bookkeeping",
                     Type = isBool ? "bool" : "int",
                     IsBoolean = isBool,
                     Min = min,
@@ -848,141 +881,26 @@ namespace CSharpToUppaal.Backend.Services
                     Source = source
                 };
                 _domains[qualified] = domain;
+                if (!isBool) _assumptions.Add(new TranslationAssumption { Severity = AssumptionSeverity.Warning, Category = "VariableDomain", SymbolName = qualified, Message = "Generated value has no established source bounds; using editable assumed bounds.", IsUserEditable = true });
                 return domain;
             }
 
-            private static bool TryGetIntLiteral(ExpressionSyntax expr, out int value)
+            private void AddSourceQueries(UppaalModel model)
             {
-                if (expr is LiteralExpressionSyntax lit && int.TryParse(lit.Token.ValueText, out value))
-                    return true;
-                if (expr is PrefixUnaryExpressionSyntax unary
-                    && unary.IsKind(SyntaxKind.UnaryMinusExpression)
-                    && unary.Operand is LiteralExpressionSyntax negLit
-                    && int.TryParse(negLit.Token.ValueText, out int pos))
+                foreach (var f in _included)
                 {
-                    value = -pos;
-                    return true;
+                    var process = _templateNames[f.Id];
+                    _queries.Add(new GeneratedQuery { Name = $"Sanity_{process}_Starts", Formula = $"E<> {process}.Entry", Category = RequirementKind.Sanity, Comment = $"Execution can enter {f.Signature}.", Source = "auto" });
+                    var result = _domains.Values.FirstOrDefault(d => d.SymbolId == f.Id + ":return");
+                    if (result?.SourceMin != null && result.SourceMax != null && !result.IsBoolean)
+                        _queries.Add(new GeneratedQuery { Name = $"Safety_{process}_Return", Formula = $"A[] (not {process}.Done or ({process}.ret >= {result.SourceMin} and {process}.ret <= {result.SourceMax}))", Category = RequirementKind.Safety, Source = "auto", Evidence = result.SourceEvidence, Comment = "On completion, the return value stays within the source-derived range. " + result.SourceEvidence });
+                    var template = model.Templates.First(t => t.Name == process);
+                    foreach (var location in template.Locations.Where(l => l.Name.StartsWith("Then") || l.Name.StartsWith("Else")))
+                        _queries.Add(new GeneratedQuery { Name = $"Reach_{process}_{location.Name}", Formula = $"E<> {process}.{location.Name}", Category = RequirementKind.Reachability, Source = "auto", Comment = "Source branch can be reached (a failed check can identify an infeasible branch)." });
                 }
-                value = 0;
-                return false;
             }
 
-            private static (int min, int max) InferIntRange(MethodDeclarationSyntax method, string variableName)
-            {
-                int? lo = null, hi = null;
 
-                void UpdateLo(int v) => lo = lo.HasValue ? Math.Min(lo.Value, v) : v;
-                void UpdateHi(int v) => hi = hi.HasValue ? Math.Max(hi.Value, v) : v;
-
-                // 1. For-loop init + condition: for (int varName = INIT; varName < BOUND; ...)
-                foreach (var forStmt in method.DescendantNodes().OfType<ForStatementSyntax>())
-                {
-                    if (forStmt.Declaration == null) continue;
-                    bool isLoopVar = forStmt.Declaration.Variables.Any(
-                        v => v.Identifier.Text.Equals(variableName, StringComparison.Ordinal));
-                    if (!isLoopVar) continue;
-
-                    foreach (var variable in forStmt.Declaration.Variables)
-                    {
-                        if (!variable.Identifier.Text.Equals(variableName, StringComparison.Ordinal)) continue;
-                        if (variable.Initializer != null && TryGetIntLiteral(variable.Initializer.Value, out int initVal))
-                            UpdateLo(initVal);
-                    }
-
-                    if (forStmt.Condition is BinaryExpressionSyntax cond)
-                    {
-                        var kind = cond.Kind();
-                        if (cond.Left is IdentifierNameSyntax li
-                            && li.Identifier.Text.Equals(variableName, StringComparison.Ordinal)
-                            && TryGetIntLiteral(cond.Right, out int bound))
-                        {
-                            UpdateHi(kind == SyntaxKind.LessThanExpression ? bound - 1 : bound);
-                        }
-                        else if (cond.Right is IdentifierNameSyntax ri
-                            && ri.Identifier.Text.Equals(variableName, StringComparison.Ordinal)
-                            && TryGetIntLiteral(cond.Left, out int bound2))
-                        {
-                            UpdateHi(kind == SyntaxKind.GreaterThanExpression ? bound2 - 1 : bound2);
-                        }
-                    }
-                }
-
-                // 2. Literal initializers: int varName = N;
-                foreach (var localDecl in method.DescendantNodes().OfType<LocalDeclarationStatementSyntax>())
-                {
-                    foreach (var variable in localDecl.Declaration.Variables)
-                    {
-                        if (!variable.Identifier.Text.Equals(variableName, StringComparison.Ordinal)) continue;
-                        if (variable.Initializer != null && TryGetIntLiteral(variable.Initializer.Value, out int val))
-                        {
-                            UpdateLo(val);
-                            UpdateHi(val);
-                        }
-                    }
-                }
-
-                // 3. Binary comparisons involving variable: varName < N, N > varName, varName == N, etc.
-                foreach (var binary in method.DescendantNodes().OfType<BinaryExpressionSyntax>())
-                {
-                    var kind = binary.Kind();
-                    if (kind != SyntaxKind.LessThanExpression
-                        && kind != SyntaxKind.LessThanOrEqualExpression
-                        && kind != SyntaxKind.GreaterThanExpression
-                        && kind != SyntaxKind.GreaterThanOrEqualExpression
-                        && kind != SyntaxKind.EqualsExpression)
-                        continue;
-
-                    bool leftIsVar = binary.Left is IdentifierNameSyntax lv
-                        && lv.Identifier.Text.Equals(variableName, StringComparison.Ordinal);
-                    bool rightIsVar = binary.Right is IdentifierNameSyntax rv
-                        && rv.Identifier.Text.Equals(variableName, StringComparison.Ordinal);
-                    if (!leftIsVar && !rightIsVar) continue;
-
-                    if (leftIsVar && TryGetIntLiteral(binary.Right, out int rval))
-                    {
-                        if (kind == SyntaxKind.LessThanExpression) UpdateHi(rval - 1);
-                        else if (kind == SyntaxKind.LessThanOrEqualExpression) UpdateHi(rval);
-                        else if (kind == SyntaxKind.GreaterThanExpression) UpdateLo(rval + 1);
-                        else if (kind == SyntaxKind.GreaterThanOrEqualExpression) UpdateLo(rval);
-                        else if (kind == SyntaxKind.EqualsExpression) { UpdateLo(rval); UpdateHi(rval); }
-                    }
-                    else if (rightIsVar && TryGetIntLiteral(binary.Left, out int lval))
-                    {
-                        if (kind == SyntaxKind.LessThanExpression) UpdateLo(lval + 1);
-                        else if (kind == SyntaxKind.LessThanOrEqualExpression) UpdateLo(lval);
-                        else if (kind == SyntaxKind.GreaterThanExpression) UpdateHi(lval - 1);
-                        else if (kind == SyntaxKind.GreaterThanOrEqualExpression) UpdateHi(lval);
-                        else if (kind == SyntaxKind.EqualsExpression) { UpdateLo(lval); UpdateHi(lval); }
-                    }
-                }
-
-                var finalMin = lo ?? -10;
-                var finalMax = hi ?? 10;
-                if (finalMin > finalMax) finalMax = finalMin;
-                return (finalMin, finalMax);
-            }
-
-            private static List<(string name, string type)> CollectLocalVariables(MethodDeclarationSyntax method)
-            {
-                var variables = new List<(string name, string type)>();
-
-                foreach (var localDecl in method.DescendantNodes().OfType<LocalDeclarationStatementSyntax>())
-                {
-                    foreach (var variable in localDecl.Declaration.Variables)
-                        variables.Add((variable.Identifier.Text, localDecl.Declaration.Type.ToString()));
-                }
-
-                foreach (var forStmt in method.DescendantNodes().OfType<ForStatementSyntax>())
-                {
-                    if (forStmt.Declaration == null)
-                        continue;
-
-                    foreach (var variable in forStmt.Declaration.Variables)
-                        variables.Add((variable.Identifier.Text, forStmt.Declaration.Type.ToString()));
-                }
-
-                return variables;
-            }
 
             private string TranslateInvocation(InvocationExpressionSyntax invocation, FunctionDescriptor currentFunction, string fallbackType, out string? unknownCallName)
             {
@@ -1020,12 +938,32 @@ namespace CSharpToUppaal.Backend.Services
                 return DefaultValue(fallbackType);
             }
 
+            private string SymbolName(SyntaxNode node)
+            {
+                var semantic = _analysis.GetSemanticModel(node);
+                var symbol = node is VariableDeclaratorSyntax v ? semantic.GetDeclaredSymbol(v) : semantic.GetSymbolInfo(node).Symbol;
+                if (symbol == null) return Sanitize(node.ToString());
+                var name = Sanitize(symbol.Name);
+                if (symbol is IFieldSymbol field) name = FieldName(field);
+                if (symbol is IParameterSymbol) name = ParameterName(symbol.Name);
+                if (symbol is ILocalSymbol local)
+                {
+                    var method = node.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault();
+                    if (name == "ret" || (method?.DescendantNodes().OfType<VariableDeclaratorSyntax>().Count(v => v.Identifier.ValueText == symbol.Name) ?? 0) > 1)
+                        name += "_" + symbol.Locations.First().SourceSpan.Start;
+                }
+                if (_domains.TryGetValue(SourceDomainAnalyzer.SymbolKey(symbol), out var domain)) domain.EmittedName = name;
+                return name;
+            }
+            private static string ParameterName(string name) => name == "ret" ? "ret_parameter" : Sanitize(name);
+            private static string FieldName(IFieldSymbol field) => "state_" + Sanitize(field.ContainingType.ToDisplayString() + "_" + field.Name);
+
             private string TranslateExpression(ExpressionSyntax expression, FunctionDescriptor function, string expectedType)
             {
                 return expression switch
                 {
                     LiteralExpressionSyntax literal => TranslateLiteral(literal, expectedType),
-                    IdentifierNameSyntax identifier => Sanitize(identifier.Identifier.Text),
+                    IdentifierNameSyntax identifier => SymbolName(identifier),
                     ParenthesizedExpressionSyntax parenthesized => $"({TranslateExpression(parenthesized.Expression, function, expectedType)})",
                     BinaryExpressionSyntax binary => $"{TranslateExpression(binary.Left, function, expectedType)} {TranslateOperator(binary.OperatorToken.Text)} {TranslateExpression(binary.Right, function, expectedType)}",
                     PrefixUnaryExpressionSyntax prefix => $"{TranslateOperator(prefix.OperatorToken.Text)}{TranslateExpression(prefix.Operand, function, expectedType)}",
@@ -1033,7 +971,7 @@ namespace CSharpToUppaal.Backend.Services
                     AssignmentExpressionSyntax assignment => $"{TranslateExpression(assignment.Left, function, expectedType)} = {TranslateExpression(assignment.Right, function, expectedType)}",
                     InvocationExpressionSyntax invocation => TranslateInvocation(invocation, function, expectedType, out _),
                     CastExpressionSyntax cast => TranslateExpression(cast.Expression, function, expectedType),
-                    MemberAccessExpressionSyntax member => Sanitize(member.Name.Identifier.Text),
+                    MemberAccessExpressionSyntax member => SymbolName(member),
                     ConditionalExpressionSyntax conditional => $"({TranslateExpression(conditional.Condition, function, "bool")} ? {TranslateExpression(conditional.WhenTrue, function, expectedType)} : {TranslateExpression(conditional.WhenFalse, function, expectedType)})",
                     _ => UnsupportedExpression(expression, function, expectedType)
                 };
@@ -1306,6 +1244,14 @@ namespace CSharpToUppaal.Backend.Services
 
                 private List<string> BuildExpressionStatement(ExpressionStatementSyntax statement, List<string> starts)
                 {
+                    if (statement.Expression is InvocationExpressionSyntax assertion && assertion.ArgumentList.Arguments.Count > 0 &&
+                        _owner._analysis.GetSemanticModel(assertion).GetSymbolInfo(assertion).Symbol is IMethodSymbol assertionMethod &&
+                        assertionMethod.Name == "Assert" && assertionMethod.ContainingType.ToDisplayString() is "System.Diagnostics.Debug" or "System.Diagnostics.Trace")
+                    {
+                        var lowered = LowerValueExpression(assertion.ArgumentList.Arguments[0].Expression, starts, "bool");
+                        AddSafetyCheck(lowered.exits, lowered.value, assertion, "Assertion");
+                        return BuildSimple(lowered.exits, "Assert", "");
+                    }
                     if (statement.Expression is InvocationExpressionSyntax invocation && _owner.TryResolveTemplateCall(invocation, out _))
                         return BuildTemplateCall(invocation, starts, null, "Call");
 
@@ -1495,7 +1441,7 @@ namespace CSharpToUppaal.Backend.Services
 
                         var lowered = LowerValueExpression(variable.Initializer.Value, current, local.Declaration.Type.ToString());
                         current = BuildSimple(lowered.exits, "Declare",
-                            $"{Sanitize(variable.Identifier.Text)} = {lowered.value}");
+                            $"{_owner.SymbolName(variable)} = {lowered.value}");
                     }
 
                     return current;
@@ -1571,6 +1517,8 @@ namespace CSharpToUppaal.Backend.Services
                         {
                             var left = LowerValueExpression(binary.Left, starts, expectedType);
                             var right = LowerValueExpression(binary.Right, left.exits, expectedType);
+                            if (binary.IsKind(SyntaxKind.DivideExpression) || binary.IsKind(SyntaxKind.ModuloExpression))
+                                AddSafetyCheck(right.exits, $"({right.value}) != 0", binary, "NonZeroDivisor");
                             return (right.exits, $"{left.value} {TranslateOperator(binary.OperatorToken.Text)} {right.value}");
                         }
                         case PrefixUnaryExpressionSyntax prefix:
@@ -1594,6 +1542,20 @@ namespace CSharpToUppaal.Backend.Services
                         .Any(invocation => _owner.TryResolveTemplateCall(invocation, out _));
                 }
 
+                private void AddSafetyCheck(List<string> starts, string predicate, SyntaxNode source, string label)
+                {
+                    var process = _owner._templateNames[_function.Id];
+                    var template = _template.ToTemplate();
+                    var locations = starts.Select(id => template.Locations.First(l => l.Id == id).Name);
+                    var guard = string.Join(" or ", locations.Select(l => process + "." + l));
+                    // Qualify local identifiers only; global call-contract values already have unique names.
+                    var names = System.Text.RegularExpressions.Regex.Matches(template.Declaration, @"\b(?:int|bool)\s+(\w+)\s*=")
+                        .Select(m => m.Groups[1].Value).ToHashSet();
+                    predicate = System.Text.RegularExpressions.Regex.Replace(predicate, @"\b[A-Za-z_]\w*\b", m => names.Contains(m.Value) ? process + "." + m.Value : m.Value);
+                    var evidence = $"{_function.SourceFile}:{source.GetLocation().GetLineSpan().StartLinePosition.Line + 1}";
+                    _owner._queries.Add(new GeneratedQuery { Name = $"Safety_{process}_{label}_{_owner._queries.Count}", Formula = $"A[] (not ({guard}) or ({predicate}))", Category = RequirementKind.Safety, Source = "auto", Evidence = evidence, Comment = $"{label} at {evidence}: {source}" });
+                }
+
                 private string BuildDeclarationUpdate(LocalDeclarationStatementSyntax local, out string select)
                 {
                     select = string.Empty;
@@ -1603,7 +1565,7 @@ namespace CSharpToUppaal.Backend.Services
                         if (variable.Initializer == null)
                             continue;
 
-                        var left = Sanitize(variable.Identifier.Text);
+                        var left = _owner.SymbolName(variable);
                         if (variable.Initializer.Value is InvocationExpressionSyntax invocation)
                         {
                             var translated = _owner.TranslateInvocation(invocation, _function, local.Declaration.Type.ToString(), out var unknown);
@@ -1637,7 +1599,7 @@ namespace CSharpToUppaal.Backend.Services
                         foreach (var variable in statement.Declaration.Variables)
                         {
                             if (variable.Initializer != null)
-                                updates.Add($"{Sanitize(variable.Identifier.Text)} = {_owner.TranslateExpression(variable.Initializer.Value, _function, statement.Declaration.Type.ToString())}");
+                                updates.Add($"{_owner.SymbolName(variable)} = {_owner.TranslateExpression(variable.Initializer.Value, _function, statement.Declaration.Type.ToString())}");
                         }
                     }
 
@@ -1733,7 +1695,7 @@ namespace CSharpToUppaal.Backend.Services
                             {
                                 if (variable.Initializer != null)
                                 {
-                                    sb.AppendLine($"{pad}{Sanitize(variable.Identifier.Text)} = {_owner.TranslateExpression(variable.Initializer.Value, _function, local.Declaration.Type.ToString())};");
+                                    sb.AppendLine($"{pad}{_owner.SymbolName(variable)} = {_owner.TranslateExpression(variable.Initializer.Value, _function, local.Declaration.Type.ToString())};");
                                 }
                             }
                             break;
@@ -1766,7 +1728,7 @@ namespace CSharpToUppaal.Backend.Services
                             break;
                         case ForStatementSyntax forStmt:
                             var init = forStmt.Declaration != null
-                                ? string.Join(", ", forStmt.Declaration.Variables.Select(v => v.Initializer == null ? string.Empty : $"{Sanitize(v.Identifier.Text)} = {_owner.TranslateExpression(v.Initializer.Value, _function, forStmt.Declaration.Type.ToString())}"))
+                                ? string.Join(", ", forStmt.Declaration.Variables.Select(v => v.Initializer == null ? string.Empty : $"{_owner.SymbolName(v)} = {_owner.TranslateExpression(v.Initializer.Value, _function, forStmt.Declaration.Type.ToString())}"))
                                 : string.Join(", ", forStmt.Initializers.Select(ExpressionToStatement));
                             var cond = forStmt.Condition == null ? "true" : _owner.TranslateExpression(forStmt.Condition, _function, "bool");
                             var inc = string.Join(", ", forStmt.Incrementors.Select(ExpressionToStatement));

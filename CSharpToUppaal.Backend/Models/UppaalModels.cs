@@ -245,7 +245,8 @@ namespace CSharpToUppaal.Backend.Models
         Safety,
         Liveness,
         LeadsTo,
-        DeadlockFreedom
+        DeadlockFreedom,
+        Sanity
     }
 
     public enum VerifytaStatus
@@ -286,12 +287,24 @@ namespace CSharpToUppaal.Backend.Models
         public FunctionModelingMode Mode { get; set; } = FunctionModelingMode.ExplicitAutomaton;
     }
 
-    public class VariableDomain
+    public class VariableDomain : EditableModel
     {
+        public string SymbolId { get; set; } = string.Empty;
+        public string OwnerNamespace { get; set; } = string.Empty;
+        public string OwnerType { get; set; } = string.Empty;
+        public string OwnerFunction { get; set; } = string.Empty;
+        public string SourceEvidence { get; set; } = string.Empty;
+        public string InferenceStatus { get; set; } = "Assumed";
+        public string CodeScope { get; set; } = "Function";
+        public string EmittedName { get; set; } = string.Empty;
+        public int? SourceMin { get; set; }
+        public int? SourceMax { get; set; }
+        public string Hierarchy => $"{OwnerNamespace} / {OwnerType} / {OwnerFunction} / {CodeScope}";
         public string Name { get; set; } = string.Empty;
         public string Type { get; set; } = "int";
-        public int Min { get; set; } = -10;
-        public int Max { get; set; } = 10;
+        private int _min = -10, _max = 10;
+        public int Min { get => _min; set => Set(ref _min, value); }
+        public int Max { get => _max; set => Set(ref _max, value); }
         public bool IsBoolean { get; set; }
         public bool IsEditable { get; set; } = true;
         public string Source { get; set; } = "default";
@@ -333,6 +346,7 @@ namespace CSharpToUppaal.Backend.Models
 
     public class RequirementInterpretation
     {
+        public string RequirementId { get; set; } = string.Empty;
         public string RequirementText { get; set; } = string.Empty;
         public RequirementKind Kind { get; set; } = RequirementKind.Unknown;
         public string Predicate { get; set; } = string.Empty;
@@ -343,14 +357,22 @@ namespace CSharpToUppaal.Backend.Models
         public List<GeneratedQuery> GeneratedQueries { get; set; } = new();
     }
 
-    public class GeneratedQuery
+    public class GeneratedQuery : EditableModel
     {
+        public string RequirementId { get; set; } = string.Empty;
+        public RequirementKind Category { get; set; } = RequirementKind.Unknown;
+        public string Evidence { get; set; } = string.Empty;
+        public string ValidationDiagnostics { get; set; } = string.Empty;
+        private string _verificationStatus = "Not run";
+        public string VerificationStatus { get => _verificationStatus; set => Set(ref _verificationStatus, value); }
         public string Name { get; set; } = string.Empty;
-        public string Formula { get; set; } = string.Empty;
+        private string _formula = string.Empty;
+        public string Formula { get => _formula; set => Set(ref _formula, value); }
         public string Comment { get; set; } = string.Empty;
         public string Source { get; set; } = "auto";
         public bool IsEditable { get; set; } = true;
-        public bool IsValidated { get; set; } = true;
+        public bool IsValidated { get; set; }
+        public string StructuralStatus => IsValidated ? "Checked" : "Needs review";
     }
 
     public class GenerationReport
@@ -360,6 +382,8 @@ namespace CSharpToUppaal.Backend.Models
         public List<TranslationAssumption> Assumptions { get; set; } = new();
         public List<VariableDomain> Domains { get; set; } = new();
         public List<GeneratedQuery> Queries { get; set; } = new();
+        public List<RequirementInterpretation> Interpretations { get; set; } = new();
+        public Dictionary<string, string> ProcessNames { get; set; } = new();
         public VerifytaResult VerifytaResult { get; set; } = new();
         public UppaalCompatibilityResult Compatibility { get; set; } = new();
         public LayoutFixResult Layout { get; set; } = new();
@@ -382,12 +406,45 @@ namespace CSharpToUppaal.Backend.Models
         public string SourceCode { get; set; } = string.Empty;
         public string FileName { get; set; } = "Source.cs";
         public List<FunctionSelection> FunctionSelections { get; set; } = new();
+        public bool SingleFunctionMode { get; set; }
+        public string SelectedEntryFunctionId { get; set; } = string.Empty;
         public List<VariableDomain> DomainOverrides { get; set; } = new();
         public List<GeneratedQuery> UserQueries { get; set; } = new();
         public string RequirementsText { get; set; } = string.Empty;
+        public List<RequirementEntry> Requirements { get; set; } = new();
         public OllamaRequirementSettings RequirementSettings { get; set; } = new();
         /// <summary>Set only after the user has reviewed non-target/external call stubs.</summary>
         public bool ExternalStubAssumptionsConfirmed { get; set; }
+    }
+
+    public class RequirementEntry : EditableModel
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString("N");
+        private string _text = string.Empty;
+        public string Text { get => _text; set => Set(ref _text, value); }
+        public bool IsActive { get; set; } = true;
+        public RequirementKind? GuidedKind { get; set; }
+        public string Variable { get; set; } = string.Empty;
+        public string Operator { get; set; } = string.Empty;
+        public string Value { get; set; } = string.Empty;
+        public string Scope { get; set; } = "Always";
+        public string FunctionId { get; set; } = string.Empty;
+        public string Target { get; set; } = string.Empty;
+        public bool Forbidden { get; set; }
+        public List<string> ReferencedFunctionIds { get; set; } = new();
+        private string _status = "Not interpreted";
+        public string Status { get => _status; set => Set(ref _status, value); }
+    }
+
+    public abstract class EditableModel : System.ComponentModel.INotifyPropertyChanged
+    {
+        public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+        protected void Set<T>(ref T field, T value, [System.Runtime.CompilerServices.CallerMemberName] string? name = null)
+        {
+            if (EqualityComparer<T>.Default.Equals(field, value)) return;
+            field = value;
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
+        }
     }
 
     public class OllamaRequirementSettings

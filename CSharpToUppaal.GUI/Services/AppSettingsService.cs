@@ -11,6 +11,7 @@ namespace CSharpToUppaal.GUI.Services
         public string OllamaBaseUrl { get; set; } = "http://localhost:11434/api";
         public string OllamaModel { get; set; } = "llama3:latest";
         public int OllamaTimeoutSeconds { get; set; } = 120;
+        public string VerifytaPath { get; set; } = string.Empty;
 
         public OllamaRequirementSettings ToRequirementSettings()
         {

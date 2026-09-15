@@ -21,11 +21,13 @@ namespace CSharpToUppaal.GUI
             OllamaBaseUrlTextBox.Text = Settings.OllamaBaseUrl;
             OllamaModelTextBox.Text = Settings.OllamaModel;
             OllamaTimeoutTextBox.Text = Settings.OllamaTimeoutSeconds.ToString();
+            VerifytaPathTextBox.Text = Settings.VerifytaPath;
         }
 
         private void OkButton_Click(object sender, RoutedEventArgs e)
         {
             Settings.OllamaEnabled = OllamaEnabledCheckBox.IsChecked == true;
+            Settings.VerifytaPath = VerifytaPathTextBox.Text.Trim();
             Settings.OllamaBaseUrl = string.IsNullOrWhiteSpace(OllamaBaseUrlTextBox.Text)
                 ? "http://localhost:11434/api"
                 : OllamaBaseUrlTextBox.Text.Trim();

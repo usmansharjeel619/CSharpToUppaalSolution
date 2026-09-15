@@ -1,7 +1,7 @@
 <Window x:Class="CSharpToUppaal.GUI.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Settings" Height="430" Width="560"
+        Title="Settings" Height="510" Width="560"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         Background="{StaticResource BackgroundBrush}"
@@ -27,6 +27,8 @@
 
             <TextBlock Text="Ollama Timeout Seconds:" Margin="0,0,0,5"/>
             <TextBox x:Name="OllamaTimeoutTextBox" Margin="0,0,0,14"/>
+            <TextBlock Text="verifyta executable (optional; blank searches PATH):" Margin="0,0,0,5"/>
+            <TextBox x:Name="VerifytaPathTextBox" Margin="0,0,0,14"/>
         </StackPanel>
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right">

@@ -10,8 +10,7 @@ namespace CSharpToUppaal.GUI
         public MainWindow()
         {
             InitializeComponent();
-            _viewModel = new MainViewModel();
-            DataContext = _viewModel;
+            _viewModel = (MainViewModel)DataContext;
 
             Loaded += MainWindow_Loaded;
         }
