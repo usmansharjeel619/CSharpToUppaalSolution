@@ -34,6 +34,40 @@ public class SemanticPipelineTests
         }
         """;
 
+    // Mirrors ProcessTransaction as it appears in the project's sample/demo code
+    // (CSharpToUppaal.Test/Program.cs), which the accompanying paper uses as its
+    // running example. Wrapping it in a single-call Main follows the same shape
+    // as BankCode above so the two fixtures are directly comparable.
+    private const string TransactionCode = """
+        using System;
+
+        namespace TransactionSystem
+        {
+            public class Account
+            {
+                public static void Main()
+                {
+                    int balance = 500;
+                    int updated = ProcessTransaction(balance, 50, 1);
+                }
+
+                public static int ProcessTransaction(int balance, int amount, int txType)
+                {
+                    int result = balance;
+                    if (txType == 1)
+                    {
+                        result = balance + amount;
+                    }
+                    else if (txType == 2 && balance >= amount)
+                    {
+                        result = balance - amount;
+                    }
+                    return result;
+                }
+            }
+        }
+        """;
+
     [Fact]
     public void CfgPresentationSimplifier_MergesOnlyLinearDeclarationRuns()
     {
@@ -438,6 +472,54 @@ public class SemanticPipelineTests
             .Single(t => t.Element("name")?.Value == "P_Account_Main");
         Assert.Contains(mainTemplate.Descendants("label"), l =>
             l.Attribute("kind")?.Value == "synchronisation" && l.Value == "call_Account_GetBalance!");
+        Assert.Contains("E&lt;&gt; Driver.DriverDone", model.XmlContent);
+    }
+
+    [Fact]
+    public async Task ProcessTransactionModelIsReadyForExportAndUsesTemplateChannelsForCalls()
+    {
+        var generator = new UppaalGeneratorService();
+        var model = await generator.GenerateModelFromRequestAsync(new ModelGenerationRequest
+        {
+            ProjectName = "TransactionModel",
+            SourceCode = TransactionCode
+        });
+
+        Assert.Equal(ModelGenerationStatus.Success, model.Status);
+        Assert.True(model.GenerationReport.Compatibility.IsReady);
+        Assert.DoesNotContain(model.GenerationReport.Compatibility.Issues,
+            i => i.Severity == UppaalCompatibilitySeverity.Error);
+        Assert.All(model.GenerationReport.Layout.Templates, t => Assert.Equal(0, t.EdgeCrossingCount));
+
+        var doc = XDocument.Parse(RemoveDoctype(model.XmlContent));
+        AssertLocationNamesAreUnique(doc);
+
+        Assert.Equal(3, doc.Descendants("template").Count()); // ProcessTransaction, Main, Driver
+        Assert.Contains("chan call_Account_ProcessTransaction, done_Account_ProcessTransaction;", model.XmlContent);
+        Assert.Contains("call_Account_ProcessTransaction!", model.XmlContent);
+        Assert.Contains("done_Account_ProcessTransaction?", model.XmlContent);
+        Assert.Contains("int result_Account_ProcessTransaction = 0;", model.XmlContent);
+
+        var mainTemplate = doc.Descendants("template")
+            .Single(t => t.Element("name")?.Value == "P_Account_Main");
+        Assert.Contains(mainTemplate.Descendants("label"), l =>
+            l.Attribute("kind")?.Value == "synchronisation" && l.Value == "call_Account_ProcessTransaction!");
+
+        // The validate-then-update body (if / else-if) is what Fig. 2 and Table 0
+        // of the paper describe: this asserts the generated template actually
+        // contains the If/Then/Else branch shape, not just that generation succeeded.
+        var transactionTemplate = doc.Descendants("template")
+            .Single(t => t.Element("name")?.Value == "P_Account_ProcessTransaction");
+        var locationNames = transactionTemplate.Elements("location")
+            .Select(l => l.Element("name")?.Value)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .ToList();
+        // "if"/"else" are reserved words in the generated declarations, so the
+        // sanitizer prefixes them with "v_" (v_If / v_Else) — Then is unaffected.
+        Assert.Contains(locationNames, n => n!.StartsWith("v_If", StringComparison.Ordinal));
+        Assert.Contains(locationNames, n => n!.StartsWith("Then", StringComparison.Ordinal));
+        Assert.Contains(locationNames, n => n!.StartsWith("v_Else", StringComparison.Ordinal));
+
         Assert.Contains("E&lt;&gt; Driver.DriverDone", model.XmlContent);
     }
 
