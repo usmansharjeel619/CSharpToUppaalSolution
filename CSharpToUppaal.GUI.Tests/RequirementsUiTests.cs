@@ -115,7 +115,7 @@ public class RequirementsUiTests
             surface.Resources.MergedDictionaries.Add(window.Resources);
             surface.Measure(new Size(1400, 900)); surface.Arrange(new Rect(0, 0, 1400, 900)); surface.UpdateLayout();
             var tabs = Descendants<TabControl>(surface).First();
-            foreach (var title in new[] { "Requirements", "Model Info" })
+            foreach (var title in new[] { "Requirements", "Model Info", "Functions" })
             {
                 tabs.SelectedItem = tabs.Items.OfType<TabItem>().Single(t => t.Header.ToString() == title);
                 surface.UpdateLayout();
@@ -125,6 +125,27 @@ public class RequirementsUiTests
                 var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); encoder.Save(file);
                 Assert.Contains(Descendants<DataGrid>(tabs), grid => grid.Items.Count > 0);
                 if (title == "Requirements") Assert.Contains(Descendants<TextBox>(tabs), box => box.Text.Contains("deadlock"));
+                if (title == "Functions")
+                {
+                    var grid = Descendants<DataGrid>(tabs).Single(g => ReferenceEquals(g.ItemsSource, vm.ModelFunctionSelections));
+                    var included = vm.ModelFunctionSelections.ToArray();
+                    var entryPoints = included.Select(f => f.IsSelected).ToArray();
+                    Assert.NotEmpty(included);
+                    foreach (var function in included)
+                    {
+                        grid.SelectedItem = function;
+                        grid.CurrentCell = new DataGridCellInfo(function, grid.Columns[0]);
+                        surface.UpdateLayout();
+                        Assert.Same(function, vm.SelectedModelFunction);
+                        Assert.False(grid.BeginEdit());
+                        var row = (DataGridRow)grid.ItemContainerGenerator.ContainerFromItem(function);
+                        var indicator = Descendants<CheckBox>(row).First();
+                        Assert.False(indicator.IsHitTestVisible);
+                        Assert.False(indicator.Focusable);
+                        Assert.Equal(included, vm.ModelFunctionSelections.ToArray());
+                        Assert.Equal(entryPoints, included.Select(f => f.IsSelected).ToArray());
+                    }
+                }
             }
             window.Close();
         });

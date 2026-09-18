@@ -232,7 +232,16 @@
                                   GridLinesVisibility="Horizontal"
                                   HeadersVisibility="Column">
                             <DataGrid.Columns>
-                                <DataGridCheckBoxColumn Header="Entry Point" Binding="{Binding IsSelected, Mode=TwoWay}" Width="80"/>
+                                <DataGridCheckBoxColumn Header="Entry Point" Binding="{Binding IsSelected, Mode=OneWay}" Width="80" IsReadOnly="True">
+                                    <DataGridCheckBoxColumn.ElementStyle>
+                                        <Style TargetType="CheckBox">
+                                            <Setter Property="IsHitTestVisible" Value="False"/>
+                                            <Setter Property="Focusable" Value="False"/>
+                                            <Setter Property="HorizontalAlignment" Value="Center"/>
+                                            <Setter Property="VerticalAlignment" Value="Center"/>
+                                        </Style>
+                                    </DataGridCheckBoxColumn.ElementStyle>
+                                </DataGridCheckBoxColumn>
                                 <DataGridTextColumn Header="Function" Binding="{Binding Name}" Width="220" IsReadOnly="True"/>
                                 <DataGridTextColumn Header="Inclusion Reason" Binding="{Binding InclusionReason}" Width="190" IsReadOnly="True"/>
                                 <DataGridTextColumn Header="Signature" Binding="{Binding Signature}" Width="260" IsReadOnly="True"/>
@@ -404,8 +413,9 @@
                                             <Setter Property="Template">
                                                 <Setter.Value>
                                                     <ControlTemplate TargetType="GroupItem">
-                                                        <Expander IsExpanded="True" Margin="8,4,0,4" Foreground="{StaticResource TextPrimaryBrush}">
-                                                            <Expander.Header><TextBlock Text="{Binding Name}" FontWeight="SemiBold"/></Expander.Header>
+                                                        <!-- Keep grouped rows at the same horizontal origin as the column headers. -->
+                                                        <Expander IsExpanded="True" Margin="0,4,0,4" Padding="0" HorizontalContentAlignment="Stretch" Foreground="{StaticResource TextPrimaryBrush}">
+                                                            <Expander.Header><TextBlock Text="{Binding Name}" FontWeight="SemiBold" Margin="8,0,0,0"/></Expander.Header>
                                                             <ItemsPresenter/>
                                                         </Expander>
                                                     </ControlTemplate>
@@ -421,11 +431,25 @@
                                 <DataGridTextColumn Header="Min" Binding="{Binding Min}" Width="80"/>
                                 <DataGridTextColumn Header="Max" Binding="{Binding Max}" Width="80"/>
                                 <DataGridCheckBoxColumn Header="Bool" Binding="{Binding IsBoolean}" Width="70"/>
-                                <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="*"/>
+                                <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="110"/>
                                 <DataGridTextColumn Header="Inference" Binding="{Binding InferenceStatus}" Width="110" IsReadOnly="True"/>
                                 <DataGridTextColumn Header="Source min" Binding="{Binding SourceMin}" Width="85" IsReadOnly="True"/>
                                 <DataGridTextColumn Header="Source max" Binding="{Binding SourceMax}" Width="85" IsReadOnly="True"/>
-                                <DataGridTextColumn Header="Evidence" Binding="{Binding SourceEvidence}" Width="300" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Evidence" Binding="{Binding SourceEvidence}" Width="*" MinWidth="300" IsReadOnly="True">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="TextWrapping" Value="Wrap"/>
+                                            <Setter Property="Margin" Value="4,3"/>
+                                            <Setter Property="ToolTip">
+                                                <Setter.Value>
+                                                    <ToolTip>
+                                                        <TextBlock Text="{Binding SourceEvidence}" TextWrapping="Wrap" MaxWidth="600"/>
+                                                    </ToolTip>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
                             </DataGrid.Columns>
                         </DataGrid>
                     </GroupBox>
