@@ -68,6 +68,97 @@ public class SemanticPipelineTests
         }
         """;
 
+    // Turnstile/vending-machine-style case study: a coin-op device that unlocks
+    // once enough credit has accumulated. Exercises the same if/else shape as
+    // TransactionCode but in a distinct domain, per the paper's evaluation plan.
+    private const string TurnstileCode = """
+        using System;
+
+        namespace TurnstileSystem
+        {
+            public class Turnstile
+            {
+                public static void Main()
+                {
+                    int locked = 1;
+                    int credit = 0;
+                    int state = InsertCoin(locked, credit);
+                }
+
+                public static int InsertCoin(int locked, int credit)
+                {
+                    int state = locked;
+                    int total = credit + 5;
+                    if (total >= 5)
+                    {
+                        state = 0;
+                    }
+                    return state;
+                }
+            }
+        }
+        """;
+
+    // Order-processing workflow case study: validates a requested quantity
+    // against on-hand stock before committing the update.
+    private const string OrderProcessingCode = """
+        using System;
+
+        namespace OrderSystem
+        {
+            public class Order
+            {
+                public static void Main()
+                {
+                    int stock = 10;
+                    int quantity = 3;
+                    int updated = ProcessOrder(stock, quantity);
+                }
+
+                public static int ProcessOrder(int stock, int quantity)
+                {
+                    int result = stock;
+                    if (quantity <= stock)
+                    {
+                        result = stock - quantity;
+                    }
+                    return result;
+                }
+            }
+        }
+        """;
+
+    // TCP-like handshake case study: a bounded while loop advances a
+    // connection through states until it reaches "established" or runs out
+    // of steps. Unlike the three fixtures above, this exercises the
+    // while-loop lowering rule (Table I) rather than if/else alone.
+    private const string HandshakeCode = """
+        using System;
+
+        namespace HandshakeSystem
+        {
+            public class Connection
+            {
+                public static void Main()
+                {
+                    int state = 0;
+                    int result = Handshake(state);
+                }
+
+                public static int Handshake(int state)
+                {
+                    int steps = 0;
+                    while (state < 3 && steps < 3)
+                    {
+                        state = state + 1;
+                        steps = steps + 1;
+                    }
+                    return state;
+                }
+            }
+        }
+        """;
+
     [Fact]
     public void CfgPresentationSimplifier_MergesOnlyLinearDeclarationRuns()
     {
@@ -519,6 +610,94 @@ public class SemanticPipelineTests
         Assert.Contains(locationNames, n => n!.StartsWith("v_If", StringComparison.Ordinal));
         Assert.Contains(locationNames, n => n!.StartsWith("Then", StringComparison.Ordinal));
         Assert.Contains(locationNames, n => n!.StartsWith("v_Else", StringComparison.Ordinal));
+
+        Assert.Contains("E&lt;&gt; Driver.DriverDone", model.XmlContent);
+    }
+
+    [Fact]
+    public async Task TurnstileModelIsReadyForExportAndUsesTemplateChannelsForCalls()
+    {
+        var generator = new UppaalGeneratorService();
+        var model = await generator.GenerateModelFromRequestAsync(new ModelGenerationRequest
+        {
+            ProjectName = "TurnstileModel",
+            SourceCode = TurnstileCode
+        });
+
+        Assert.Equal(ModelGenerationStatus.Success, model.Status);
+        Assert.True(model.GenerationReport.Compatibility.IsReady);
+        Assert.DoesNotContain(model.GenerationReport.Compatibility.Issues,
+            i => i.Severity == UppaalCompatibilitySeverity.Error);
+        Assert.All(model.GenerationReport.Layout.Templates, t => Assert.Equal(0, t.EdgeCrossingCount));
+
+        var doc = XDocument.Parse(RemoveDoctype(model.XmlContent));
+        AssertLocationNamesAreUnique(doc);
+
+        Assert.Equal(3, doc.Descendants("template").Count()); // InsertCoin, Main, Driver
+        Assert.Contains("chan call_Turnstile_InsertCoin, done_Turnstile_InsertCoin;", model.XmlContent);
+        Assert.Contains("call_Turnstile_InsertCoin!", model.XmlContent);
+        Assert.Contains("done_Turnstile_InsertCoin?", model.XmlContent);
+        Assert.Contains("E&lt;&gt; Driver.DriverDone", model.XmlContent);
+    }
+
+    [Fact]
+    public async Task OrderProcessingModelIsReadyForExportAndUsesTemplateChannelsForCalls()
+    {
+        var generator = new UppaalGeneratorService();
+        var model = await generator.GenerateModelFromRequestAsync(new ModelGenerationRequest
+        {
+            ProjectName = "OrderProcessingModel",
+            SourceCode = OrderProcessingCode
+        });
+
+        Assert.Equal(ModelGenerationStatus.Success, model.Status);
+        Assert.True(model.GenerationReport.Compatibility.IsReady);
+        Assert.DoesNotContain(model.GenerationReport.Compatibility.Issues,
+            i => i.Severity == UppaalCompatibilitySeverity.Error);
+        Assert.All(model.GenerationReport.Layout.Templates, t => Assert.Equal(0, t.EdgeCrossingCount));
+
+        var doc = XDocument.Parse(RemoveDoctype(model.XmlContent));
+        AssertLocationNamesAreUnique(doc);
+
+        Assert.Equal(3, doc.Descendants("template").Count()); // ProcessOrder, Main, Driver
+        Assert.Contains("chan call_Order_ProcessOrder, done_Order_ProcessOrder;", model.XmlContent);
+        Assert.Contains("call_Order_ProcessOrder!", model.XmlContent);
+        Assert.Contains("done_Order_ProcessOrder?", model.XmlContent);
+        Assert.Contains("E&lt;&gt; Driver.DriverDone", model.XmlContent);
+    }
+
+    [Fact]
+    public async Task HandshakeModelIsReadyForExportAndUsesWhileLoopLowering()
+    {
+        var generator = new UppaalGeneratorService();
+        var model = await generator.GenerateModelFromRequestAsync(new ModelGenerationRequest
+        {
+            ProjectName = "HandshakeModel",
+            SourceCode = HandshakeCode
+        });
+
+        Assert.Equal(ModelGenerationStatus.Success, model.Status);
+        Assert.True(model.GenerationReport.Compatibility.IsReady);
+        Assert.DoesNotContain(model.GenerationReport.Compatibility.Issues,
+            i => i.Severity == UppaalCompatibilitySeverity.Error);
+        Assert.All(model.GenerationReport.Layout.Templates, t => Assert.Equal(0, t.EdgeCrossingCount));
+
+        var doc = XDocument.Parse(RemoveDoctype(model.XmlContent));
+        AssertLocationNamesAreUnique(doc);
+
+        Assert.Equal(3, doc.Descendants("template").Count()); // Handshake, Main, Driver
+        Assert.Contains("chan call_Connection_Handshake, done_Connection_Handshake;", model.XmlContent);
+
+        // Unlike the if/else-based fixtures above, this exercises the while-loop
+        // lowering rule (Table I row 2): a condition location with a guarded
+        // loop-back edge, distinct from the branch-and-merge shape.
+        var handshakeTemplate = doc.Descendants("template")
+            .Single(t => t.Element("name")?.Value == "P_Connection_Handshake");
+        var locationNames = handshakeTemplate.Elements("location")
+            .Select(l => l.Element("name")?.Value)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .ToList();
+        Assert.Contains(locationNames, n => n!.Contains("While", StringComparison.OrdinalIgnoreCase));
 
         Assert.Contains("E&lt;&gt; Driver.DriverDone", model.XmlContent);
     }
