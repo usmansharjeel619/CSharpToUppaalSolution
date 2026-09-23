@@ -150,6 +150,8 @@ namespace BankSystem
         [ObservableProperty]
         private bool _singleFunctionMode;
 
+        public bool IsMultiFunctionMode => !SingleFunctionMode;
+
         [ObservableProperty]
         private FunctionSelectionViewModel _selectedEntryFunction;
 
@@ -1093,6 +1095,10 @@ namespace BankSystem
         private async Task RefreshSemanticFunctionListAsync()
         {
             var entryId = SelectedEntryFunction?.FunctionId;
+            var previousSelections = FunctionSelections.ToDictionary(
+                function => function.FunctionId,
+                function => (function.IsSelected, function.Mode, function.EntryPointReason),
+                StringComparer.Ordinal);
             FunctionSelections.Clear();
             ModelFunctionSelections.Clear();
             IdentifiedFunctionSelections.Clear();
@@ -1122,13 +1128,14 @@ namespace BankSystem
 
             foreach (var function in analysis.Functions.OrderBy(f => f.LineNumber))
             {
+                var hadSelection = previousSelections.TryGetValue(function.Id, out var previous);
                 var vm = new FunctionSelectionViewModel(function)
                 {
-                    IsSelected = recommendedEntryPoints.ContainsKey(function.Id),
-                    EntryPointReason = recommendedEntryPoints.TryGetValue(function.Id, out var reason)
+                    IsSelected = hadSelection ? previous.IsSelected : recommendedEntryPoints.ContainsKey(function.Id),
+                    EntryPointReason = hadSelection ? previous.EntryPointReason : recommendedEntryPoints.TryGetValue(function.Id, out var reason)
                         ? reason
                         : "User-selected entry point",
-                    Mode = FunctionModelingMode.ExplicitAutomaton
+                    Mode = hadSelection ? previous.Mode : FunctionModelingMode.ExplicitAutomaton
                 };
                 vm.PropertyChanged += (_, e) =>
                 {
@@ -1153,7 +1160,9 @@ namespace BankSystem
             }
 
             _latestSemanticAnalysis = analysis;
-            if (entryId != null) SelectedEntryFunction = FunctionSelections.FirstOrDefault(f => f.FunctionId == entryId);
+            SelectedEntryFunction = FunctionSelections.FirstOrDefault(f => f.FunctionId == entryId)
+                ?? FunctionSelections.FirstOrDefault(f => f.IsSelected)
+                ?? FunctionSelections.FirstOrDefault();
             _sourceDirty = false;
             RecomputeFunctionScope();
             StatusMessage = $"Semantic analysis found {FunctionSelections.Count} function(s): {ModelFunctionSelections.Count} in the UPPAAL model, {IdentifiedFunctionSelections.Count} identified only" +
@@ -1238,7 +1247,7 @@ namespace BankSystem
         private List<FunctionSelection> BuildFunctionSelections()
         {
             if (SingleFunctionMode)
-                return FunctionSelections.Select(f => new FunctionSelection { FunctionId = f.FunctionId, IsSelected = f.FunctionId == SelectedEntryFunction?.FunctionId, Mode = FunctionModelingMode.ExplicitAutomaton }).ToList();
+                return FunctionSelections.Select(f => new FunctionSelection { FunctionId = f.FunctionId, IsSelected = f.FunctionId == SelectedEntryFunction?.FunctionId, Mode = f.Mode }).ToList();
             return FunctionSelections.Select(f => new FunctionSelection
             {
                 FunctionId = f.FunctionId,

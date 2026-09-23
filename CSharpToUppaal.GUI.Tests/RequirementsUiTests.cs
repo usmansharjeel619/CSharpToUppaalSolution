@@ -1,5 +1,7 @@
 using System.Reflection;
 using System.Windows;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -76,6 +78,33 @@ public class RequirementsUiTests
         });
     }
     [Fact]
+    public void FunctionSelectionCommandsAndReanalysisKeepUserChoices()
+    {
+        Sta(() =>
+        {
+            var vm = new MainViewModel(); PumpUntil(() => !vm.IsBusy);
+            vm.DeselectAllFunctionsCommand.Execute(null);
+            Assert.Empty(vm.ModelFunctionSelections);
+            Assert.Equal(vm.FunctionSelections.Count, vm.IdentifiedFunctionSelections.Count);
+
+            var chosen = vm.FunctionSelections.Single(f => f.Name.EndsWith("GetBalance"));
+            chosen.IsSelected = true;
+            chosen.Mode = FunctionModelingMode.Stub;
+            Assert.Single(vm.ModelFunctionSelections);
+
+            var analysis = vm.RunAnalysisCommand.ExecuteAsync(null);
+            PumpUntil(() => analysis.IsCompleted);
+            analysis.GetAwaiter().GetResult();
+            chosen = vm.FunctionSelections.Single(f => f.Name.EndsWith("GetBalance"));
+            Assert.True(chosen.IsSelected);
+            Assert.Equal(FunctionModelingMode.Stub, chosen.Mode);
+            Assert.Single(vm.ModelFunctionSelections);
+
+            vm.SelectAllFunctionsCommand.Execute(null);
+            Assert.Equal(vm.FunctionSelections.Count, vm.ModelFunctionSelections.Count);
+        });
+    }
+    [Fact]
     public void IndividualInterpretationPreservesOtherQueriesAndDomainsAreGrouped()
     {
         Sta(() =>
@@ -129,7 +158,6 @@ public class RequirementsUiTests
                 {
                     var grid = Descendants<DataGrid>(tabs).Single(g => ReferenceEquals(g.ItemsSource, vm.ModelFunctionSelections));
                     var included = vm.ModelFunctionSelections.ToArray();
-                    var entryPoints = included.Select(f => f.IsSelected).ToArray();
                     Assert.NotEmpty(included);
                     foreach (var function in included)
                     {
@@ -137,14 +165,25 @@ public class RequirementsUiTests
                         grid.CurrentCell = new DataGridCellInfo(function, grid.Columns[0]);
                         surface.UpdateLayout();
                         Assert.Same(function, vm.SelectedModelFunction);
-                        Assert.False(grid.BeginEdit());
                         var row = (DataGridRow)grid.ItemContainerGenerator.ContainerFromItem(function);
                         var indicator = Descendants<CheckBox>(row).First();
-                        Assert.False(indicator.IsHitTestVisible);
-                        Assert.False(indicator.Focusable);
+                        Assert.True(indicator.IsHitTestVisible);
+                        Assert.True(indicator.IsEnabled);
                         Assert.Equal(included, vm.ModelFunctionSelections.ToArray());
-                        Assert.Equal(entryPoints, included.Select(f => f.IsSelected).ToArray());
                     }
+                    var first = included[0];
+                    var firstRow = (DataGridRow)grid.ItemContainerGenerator.ContainerFromItem(first);
+                    var firstCheckBox = Descendants<CheckBox>(firstRow).First();
+                    var toggle = (IToggleProvider)new CheckBoxAutomationPeer(firstCheckBox).GetPattern(PatternInterface.Toggle);
+                    toggle.Toggle();
+                    Assert.False(first.IsSelected);
+                    Assert.DoesNotContain(first, vm.ModelFunctionSelections);
+                    Assert.Contains(first, vm.IdentifiedFunctionSelections);
+                    vm.SelectedEntryFunction = included[1];
+                    vm.SingleFunctionMode = true;
+                    surface.UpdateLayout();
+                    firstCheckBox = Descendants<CheckBox>((DataGridRow)grid.ItemContainerGenerator.ContainerFromItem(included[1])).First();
+                    Assert.False(firstCheckBox.IsEnabled);
                 }
             }
             window.Close();

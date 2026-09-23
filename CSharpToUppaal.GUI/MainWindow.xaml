@@ -202,18 +202,22 @@
                                 Margin="8"/>
                         <Button Content="Select All"
                                 Command="{Binding SelectAllFunctionsCommand}"
+                                IsEnabled="{Binding IsMultiFunctionMode}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 Margin="4,8"/>
                         <Button Content="Deselect All"
                                 Command="{Binding DeselectAllFunctionsCommand}"
+                                IsEnabled="{Binding IsMultiFunctionMode}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 Margin="4,8"/>
                         <Button Content="Add to UPPAAL Model"
                                 Command="{Binding AddToUppaalModelCommand}"
+                                IsEnabled="{Binding IsMultiFunctionMode}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 Margin="12,8,4,8"/>
                         <Button Content="Remove from UPPAAL Model"
                                 Command="{Binding RemoveFromUppaalModelCommand}"
+                                IsEnabled="{Binding IsMultiFunctionMode}"
                                 Style="{StaticResource WhiteButtonStyle}"
                                 Margin="4,8"/>
                         <CheckBox Content="Single entry scope" IsChecked="{Binding SingleFunctionMode, Mode=TwoWay}" Foreground="White" VerticalAlignment="Center" Margin="14,0,4,0"/>
@@ -232,16 +236,17 @@
                                   GridLinesVisibility="Horizontal"
                                   HeadersVisibility="Column">
                             <DataGrid.Columns>
-                                <DataGridCheckBoxColumn Header="Entry Point" Binding="{Binding IsSelected, Mode=OneWay}" Width="80" IsReadOnly="True">
-                                    <DataGridCheckBoxColumn.ElementStyle>
-                                        <Style TargetType="CheckBox">
-                                            <Setter Property="IsHitTestVisible" Value="False"/>
-                                            <Setter Property="Focusable" Value="False"/>
-                                            <Setter Property="HorizontalAlignment" Value="Center"/>
-                                            <Setter Property="VerticalAlignment" Value="Center"/>
-                                        </Style>
-                                    </DataGridCheckBoxColumn.ElementStyle>
-                                </DataGridCheckBoxColumn>
+                                <DataGridTemplateColumn Header="Entry Point" Width="80">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                      IsEnabled="{Binding DataContext.IsMultiFunctionMode, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                      HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center"
+                                                      ToolTip="Toggle this function as an entry point"/>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
                                 <DataGridTextColumn Header="Function" Binding="{Binding Name}" Width="220" IsReadOnly="True"/>
                                 <DataGridTextColumn Header="Inclusion Reason" Binding="{Binding InclusionReason}" Width="190" IsReadOnly="True"/>
                                 <DataGridTextColumn Header="Signature" Binding="{Binding Signature}" Width="260" IsReadOnly="True"/>

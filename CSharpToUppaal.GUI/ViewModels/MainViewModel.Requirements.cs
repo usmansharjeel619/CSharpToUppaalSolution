@@ -102,7 +102,7 @@ public partial class MainViewModel
         RequirementSymbols.Clear(); RequirementLocations.Clear();
     }
     partial void OnSourceCodeChanged(string value) { _sourceDirty = true; InvalidateModel(); }
-    partial void OnSingleFunctionModeChanged(bool value) { InvalidateModel(); RecomputeFunctionScope(); }
+    partial void OnSingleFunctionModeChanged(bool value) { OnPropertyChanged(nameof(IsMultiFunctionMode)); InvalidateModel(); RecomputeFunctionScope(); }
     partial void OnSelectedEntryFunctionChanged(FunctionSelectionViewModel value) { InvalidateModel(); RecomputeFunctionScope(); }
     partial void OnTemplateSymbolChanged(string value)
     {
